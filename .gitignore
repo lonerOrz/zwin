@@ -1,0 +1,28 @@
+# Zig
+zig-out/
+.zig-cache/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Nix
+result
+result-*
+.direnv/
+.envrc
+

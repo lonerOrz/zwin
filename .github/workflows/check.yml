@@ -1,0 +1,53 @@
+name: Check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Verify formatting
+        run: zig fmt --check src/ build.zig build.zig.zon
+
+  test:
+    name: Build & Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Run pure calculation unit tests
+        run: zig build test -Dtarget=x86_64-windows-gnu --summary all
+
+      - name: Build Debug Artifact
+        run: zig build -Dtarget=x86_64-windows-gnu --summary all
+
+      - name: Build Release Artifact
+        run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows-gnu --summary all

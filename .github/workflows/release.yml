@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "build.zig.zon"
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: "Force rebuild and overwrite release assets if already exists"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    name: Check Version & Release Status
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.gatekeeper.outputs.should_release }}
+      version: ${{ steps.pkg_info.outputs.version }}
+      tag: ${{ steps.pkg_info.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract package version from build.zig.zon
+        id: pkg_info
+        run: |
+          VERSION=$(sed -n 's/.*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' build.zig.zon | head -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to extract version from build.zig.zon"
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Target Package: zwin | Version: $VERSION | Tag: $TAG"
+
+      - name: Check if GitHub Release exists
+        id: gatekeeper
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.pkg_info.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            if [ "${{ inputs.force_release }}" = "true" ]; then
+              echo "force_release=true: Proceeding with overwrite."
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Skipping release (version unchanged)."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "Release $TAG does not exist. Proceeding."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-release:
+    name: Build & Publish (Windows)
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify version invariant
+        shell: bash
+        run: |
+          CHECK_VER=$(sed -n 's/.*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' build.zig.zon | head -n 1)
+          EXPECTED="${{ needs.check-version.outputs.version }}"
+          if [ "$CHECK_VER" != "$EXPECTED" ]; then
+            echo "::error::Version mismatch! Commit has $CHECK_VER but expected $EXPECTED"
+            exit 1
+          fi
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Compile release binary
+        shell: bash
+        run: |
+          zig build -Doptimize=ReleaseFast -Dstrip=true -Dtarget=x86_64-windows-gnu --summary all
+          mkdir -p dist
+
+      - name: Package Portable Zip
+        shell: bash
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          STAGE_DIR="dist/portable"
+          mkdir -p "$STAGE_DIR"
+
+          cp zig-out/bin/zwin.exe "$STAGE_DIR/"
+          [ -f README.md ] && cp README.md "$STAGE_DIR/"
+          [ -f LICENSE ] && cp LICENSE "$STAGE_DIR/"
+
+          ZIP_NAME="zwin-v${VERSION}-windows-x86_64-portable.zip"
+          powershell -Command "Compress-Archive -Path '$STAGE_DIR/*' -DestinationPath 'dist/$ZIP_NAME' -Force"
+
+      - name: Generate deterministic SHA256 checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.zip | sort > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cd ..
+
+      - name: Publish GitHub Release
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.check-version.outputs.tag }}"
+
+          if [ "${{ inputs.force_release }}" = "true" ] && gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes
+          fi
+
+          gh release create "$TAG" \
+            --target "${{ github.sha }}" \
+            --title "zwin $TAG" \
+            --generate-notes \
+            dist/*.zip dist/SHA256SUMS.txt
+
+      - name: Rollback on Failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.check-version.outputs.tag }}"
+          echo "::error::Release pipeline failed. Rolling back $TAG..."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes || true
+          fi
+
+          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+            git push origin --delete "$TAG" || true
+          fi
