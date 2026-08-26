@@ -19,8 +19,18 @@ pub const Window = struct {
             curr = root;
         }
 
-        if (isManageableTopLevel(curr)) return curr;
+        if (isManageableTopLevel(curr) and !isCloaked(curr)) return curr;
         return null;
+    }
+
+    /// UWP suspended apps and virtual-desktop ghosts pass IsWindowVisible
+    /// yet render nothing; DWM flags them cloaked.
+    fn isCloaked(hwnd: t.HWND) bool {
+        var cloaked: u32 = 0;
+        if (t.DwmGetWindowAttribute(hwnd, t.DWMWA_CLOAKED, &cloaked, @sizeOf(u32)) == 0) {
+            return cloaked != 0;
+        }
+        return false;
     }
 
     fn isManageableTopLevel(hwnd: t.HWND) bool {

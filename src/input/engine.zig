@@ -38,6 +38,10 @@ pub const InputEngine = struct {
     middle_pending: bool = false,
 
     notify_hwnd: t.HWND = undefined,
+    hinst: ?t.HINSTANCE = null,
+
+    /// Liveness beacon stamped by every WM_MOUSEMOVE the mouse hook sees.
+    last_hook_mouse_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     lock: t.SRWLOCK = .{},
     intents: [intent_cap]UserIntent = undefined,
@@ -55,6 +59,7 @@ pub const InputEngine = struct {
 
     pub fn install(self: *InputEngine, hinst: ?t.HINSTANCE, notify_hwnd: t.HWND) !void {
         self.notify_hwnd = notify_hwnd;
+        self.hinst = hinst;
         InputEngine.global = self;
         errdefer self.uninstall();
         self.kb_hook = t.SetWindowsHookExW(t.WH_KEYBOARD_LL, keyboardCallback, hinst, 0) orelse return error.KbHookFailed;
@@ -68,6 +73,21 @@ pub const InputEngine = struct {
         self.kb_hook = null;
         self.mouse_hook = null;
         InputEngine.global = null;
+    }
+
+    /// Watchdog repair path (main thread): LL hooks can be silently dropped
+    /// after sleep/resume or under hook-timeout storms; re-arm with the
+    /// same module handle and callbacks.
+    pub fn reinstall(self: *InputEngine) void {
+        if (self.kb_hook) |kh| _ = t.UnhookWindowsHookEx(kh);
+        if (self.mouse_hook) |mh| _ = t.UnhookWindowsHookEx(mh);
+        self.kb_hook = t.SetWindowsHookExW(t.WH_KEYBOARD_LL, keyboardCallback, self.hinst, 0);
+        self.mouse_hook = t.SetWindowsHookExW(t.WH_MOUSE_LL, mouseCallback, self.hinst, 0);
+        if (self.kb_hook == null or self.mouse_hook == null) {
+            logger.err("Hook", "watchdog reinstall failed", .{});
+        } else {
+            logger.info("Hook", "low-level hooks reinstalled", .{});
+        }
     }
 
     pub fn isAltDown(self: *InputEngine) bool {
@@ -134,6 +154,13 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
         return t.CallNextHookEx(null, nCode, wParam, lParam);
     }
 
+    if (is_down and kbd.vkCode == t.VK_ESCAPE and self.gesture.isBusy()) {
+        // Gesture state is owned by the mouse-hook thread; route the abort
+        // through the ring instead of touching it from this thread.
+        self.enqueueIntent(.abort_gesture);
+        return 1;
+    }
+
     if (self.isAltDown() and is_down) {
         if (kbd.vkCode == self.config.key_center) {
             self.alt_state = .alt_held_consumed;
@@ -158,6 +185,12 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     const self = InputEngine.global orelse return t.CallNextHookEx(null, nCode, wParam, lParam);
     const mouse: *const t.MSLLHOOKSTRUCT = @ptrFromInt(@as(usize, @bitCast(lParam)));
     const pt: geom.Point = .{ .x = mouse.pt.x, .y = mouse.pt.y };
+
+    if (wParam == t.WM_MOUSEMOVE) {
+        // Liveness beacon; stamped before any pause/alt gating so the
+        // watchdog stays truthful while paused too.
+        self.last_hook_mouse_ms.store(t.GetTickCount64(), .release);
+    }
 
     if (self.isAltDown() and !self.paused.load(.acquire)) {
         switch (wParam) {

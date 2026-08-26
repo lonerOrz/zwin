@@ -31,6 +31,21 @@ fn rectFromWin32(rc: t.RECT) geom.Rect {
     return .{ .left = rc.left, .top = rc.top, .right = rc.right, .bottom = rc.bottom };
 }
 
+/// AltSnap-style WM_SIZING edge flag so apps can grid-align the proposal.
+fn sectorToWmsz(sector: geom.Sector) usize {
+    return switch (sector) {
+        .top_left => t.WMSZ_TOPLEFT,
+        .top => t.WMSZ_TOP,
+        .top_right => t.WMSZ_TOPRIGHT,
+        .left => t.WMSZ_LEFT,
+        .center => t.WMSZ_BOTTOMRIGHT,
+        .right => t.WMSZ_RIGHT,
+        .bottom_left => t.WMSZ_BOTTOMLEFT,
+        .bottom => t.WMSZ_BOTTOM,
+        .bottom_right => t.WMSZ_BOTTOMRIGHT,
+    };
+}
+
 pub const GestureStateMachine = struct {
     state: GestureState = .idle,
     worker: *WindowWorker,
@@ -56,6 +71,7 @@ pub const GestureStateMachine = struct {
             .work_area = win.getMonitorWorkArea(),
             .dpi = t.GetDpiForWindow(target.hwnd),
         } };
+        announceMoveSize(self.state.dragging.target.hwnd);
     }
 
     pub fn startResize(
@@ -75,6 +91,7 @@ pub const GestureStateMachine = struct {
             .shadow_pad = pad,
             .work_area = win.getMonitorWorkArea(),
         } };
+        announceMoveSize(self.state.resizing.target.hwnd);
     }
 
     pub fn updateMouseMove(self: *GestureStateMachine, current_pt: geom.Point) void {
@@ -133,16 +150,61 @@ pub const GestureStateMachine = struct {
                     .y = rc.top - pad.t,
                     .w = rc.width() + pad.l + pad.r,
                     .h = rc.height() + pad.t + pad.b,
+                    .wmsz = sectorToWmsz(r.sector),
                 } });
             },
         }
     }
 
     pub fn finish(self: *GestureStateMachine) void {
+        switch (self.state) {
+            .dragging => |d| endMoveSize(d.target.hwnd),
+            .resizing => |r| endMoveSize(r.target.hwnd),
+            .idle => {},
+        }
         self.state = .idle;
+    }
+
+    /// ESC-abort: snap back to where the gesture started. Runs on the main
+    /// thread (via intent ring); only touches worker queues plus state owned
+    /// at that moment by nobody.
+    pub fn abort(self: *GestureStateMachine) void {
+        switch (self.state) {
+            .idle => return,
+            .dragging => |d| {
+                self.worker.postStreaming(d.target, .{ .move = .{
+                    .x = d.start_bounds.left - d.shadow_pad.l,
+                    .y = d.start_bounds.top - d.shadow_pad.t,
+                } });
+            },
+            .resizing => |r| {
+                const b = r.start_bounds;
+                const pad = r.shadow_pad;
+                self.worker.postStreaming(r.target, .{ .resize = .{
+                    .x = b.left - pad.l,
+                    .y = b.top - pad.t,
+                    .w = b.width() + pad.l + pad.r,
+                    .h = b.height() + pad.t + pad.b,
+                    .wmsz = sectorToWmsz(r.sector),
+                } });
+            },
+        }
+        self.finish();
     }
 
     pub fn isBusy(self: *const GestureStateMachine) bool {
         return self.state != .idle;
     }
 };
+
+/// Mirror the system's own move/size loop so apps update chrome, scrollbars
+/// and accessibility state; async Post keeps the hook thread non-blocking.
+fn announceMoveSize(hwnd: t.HWND) void {
+    _ = t.PostMessageW(hwnd, t.WM_ENTERSIZEMOVE, 0, 0);
+    t.NotifyWinEvent(t.EVENT_SYSTEM_MOVESIZESTART, hwnd, t.OBJID_WINDOW, 0);
+}
+
+fn endMoveSize(hwnd: t.HWND) void {
+    _ = t.PostMessageW(hwnd, t.WM_EXITSIZEMOVE, 0, 0);
+    t.NotifyWinEvent(t.EVENT_SYSTEM_MOVESIZEEND, hwnd, t.OBJID_WINDOW, 0);
+}

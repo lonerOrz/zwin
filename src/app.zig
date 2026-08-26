@@ -34,6 +34,7 @@ pub const single_instance_mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("z
 const elevation_task_name = "zwin";
 
 const TIMER_BORDER_REINFORCE: usize = 2001;
+const TIMER_REHOOK_WATCHDOG: usize = 2002;
 
 pub const App = struct {
     allocator: std.mem.Allocator,
@@ -50,6 +51,7 @@ pub const App = struct {
     last_config_write_ms: u64 = 0,
     quitting: bool = false,
     taskbar_created_msg: u32 = 0,
+    watchdog_pt: t.POINT = .{ .x = 0, .y = 0 },
     current_session_id: u64 = 0,
     hicon_enabled: ?t.HICON = null,
     hicon_disabled: ?t.HICON = null,
@@ -109,6 +111,10 @@ pub const App = struct {
         try self.hook_engine.install(hinst, self.main_hwnd.?);
         try self.watcher.start(self.allocator, self.main_hwnd.?);
 
+        // Sleep/resume and hook-timeout storms can silently unmap LL hooks;
+        // poll liveness so gestures never die quietly.
+        _ = t.SetTimer(self.main_hwnd.?, TIMER_REHOOK_WATCHDOG, 5000, null);
+
         // Registry Run and the scheduled task are mutually exclusive: both
         // firing at logon would race for the mutex and fight over config.json.
         self.syncAutostartState();
@@ -135,6 +141,7 @@ pub const App = struct {
 
         if (self.main_hwnd) |hwnd| {
             _ = t.KillTimer(hwnd, TIMER_BORDER_REINFORCE);
+            _ = t.KillTimer(hwnd, TIMER_REHOOK_WATCHDOG);
             _ = t.DestroyWindow(hwnd);
         }
 
@@ -423,6 +430,9 @@ pub const App = struct {
                 const target = self.resolveActiveTarget() orelse return;
                 Window.init(target.hwnd).close();
             },
+            .abort_gesture => {
+                self.gesture.abort();
+            },
             // Drag/resize starts are NOT intents: they must begin
             // synchronously with the physical button press inside the mouse
             // hook (see engine.zig), or a fast click's button-up overtakes
@@ -657,6 +667,18 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 _ = t.KillTimer(hwnd, TIMER_BORDER_REINFORCE);
                 if (t.GetForegroundWindow()) |current_fg| {
                     app.border_mgr.refreshCurrent(current_fg);
+                }
+            } else if (wParam == TIMER_REHOOK_WATCHDOG) {
+                var cur: t.POINT = undefined;
+                if (!app.quitting and t.GetCursorPos(&cur) != 0) {
+                    const moved = cur.x != app.watchdog_pt.x or cur.y != app.watchdog_pt.y;
+                    const last_seen = app.hook_engine.last_hook_mouse_ms.load(.acquire);
+                    // Cursor moved since the previous tick but the hook saw
+                    // no WM_MOUSEMOVE for over one interval: hooks are dead.
+                    if (moved and t.GetTickCount64() - last_seen > 6000) {
+                        app.hook_engine.reinstall();
+                    }
+                    app.watchdog_pt = cur;
                 }
             }
         },

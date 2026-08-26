@@ -11,6 +11,10 @@ pub const UserIntent = union(enum) {
     center_active_window,
     toggle_active_topmost,
     close_active_window,
+    // ESC during an active gesture. The keyboard hook thread must never
+    // touch gesture state directly (owned by the mouse-hook thread), so
+    // the abort travels through this ring to the main thread.
+    abort_gesture,
 
     // Mouse intents (carry screen absolute coordinates).
     minimize_at: struct { pt: geom.Point },

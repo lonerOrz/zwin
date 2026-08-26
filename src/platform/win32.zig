@@ -256,6 +256,8 @@ pub extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.winapi) LRE
 pub extern "user32" fn PostQuitMessage(nExitCode: i32) callconv(.winapi) void;
 pub extern "user32" fn PostMessageW(hWnd: ?HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn GetCursorPos(lpPoint: *POINT) callconv(.winapi) BOOL;
+pub extern "user32" fn SendMessageTimeoutW(hWnd: HWND, Msg: u32, wParam: WPARAM, lParam: LPARAM, fuFlags: u32, uTimeout: u32, lpdwResult: ?*usize) callconv(.winapi) BOOL;
+pub extern "user32" fn NotifyWinEvent(event: u32, hwnd: HWND, idObject: i32, idChild: i32) callconv(.winapi) void;
 pub extern "user32" fn WindowFromPoint(Point: POINT) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetAncestor(hwnd: HWND, gaFlags: u32) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetWindowRect(hwnd: HWND, lpRect: *RECT) callconv(.winapi) BOOL;
@@ -349,6 +351,7 @@ pub const VK_MENU: u32 = 0x12;
 pub const VK_LMENU: u32 = 0xA4;
 pub const VK_RMENU: u32 = 0xA5;
 pub const VK_MENU_I32: i32 = 0x12;
+pub const VK_ESCAPE: u32 = 0x1B;
 
 pub const GA_ROOT: u32 = 2;
 pub const GA_ROOTOWNER: u32 = 3;
@@ -378,6 +381,8 @@ pub const WINEVENT_OUTOFCONTEXT: u32 = 0x0002;
 pub const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 pub const EVENT_SYSTEM_MINIMIZESTART: u32 = 0x0016;
 pub const EVENT_SYSTEM_MINIMIZEEND: u32 = 0x0017;
+pub const EVENT_SYSTEM_MOVESIZESTART: u32 = 0x000A;
+pub const EVENT_SYSTEM_MOVESIZEEND: u32 = 0x000B;
 pub const EVENT_OBJECT_DESTROY: u32 = 0x8001;
 pub const EVENT_OBJECT_SHOW: u32 = 0x8002;
 pub const EVENT_OBJECT_HIDE: u32 = 0x8003;
@@ -386,6 +391,29 @@ pub const OBJID_WINDOW: i32 = 0;
 pub const WM_TIMER: u32 = 0x0113;
 pub const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 pub const DWMWA_BORDER_COLOR: u32 = 34;
+pub const DWMWA_CLOAKED: u32 = 14;
+
+pub const WM_SIZING: u32 = 0x0214;
+pub const WM_ENTERSIZEMOVE: u32 = 0x0231;
+pub const WM_EXITSIZEMOVE: u32 = 0x0232;
+pub const WM_GETMINMAXINFO: u32 = 0x0024;
+pub const WMSZ_LEFT: usize = 1;
+pub const WMSZ_RIGHT: usize = 2;
+pub const WMSZ_TOP: usize = 3;
+pub const WMSZ_TOPLEFT: usize = 4;
+pub const WMSZ_TOPRIGHT: usize = 5;
+pub const WMSZ_BOTTOM: usize = 6;
+pub const WMSZ_BOTTOMLEFT: usize = 7;
+pub const WMSZ_BOTTOMRIGHT: usize = 8;
+pub const SMTO_ABORTIFHUNG: u32 = 0x0002;
+
+pub const MINMAXINFO = extern struct {
+    ptReserved: POINT,
+    ptMaxSize: POINT,
+    ptMaxPosition: POINT,
+    ptMinTrackSize: POINT,
+    ptMaxTrackSize: POINT,
+};
 
 pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 pub const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));

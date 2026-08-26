@@ -5,7 +5,7 @@ const logger = @import("logger.zig");
 
 pub const StreamingOp = union(enum) {
     move: struct { x: i32, y: i32 },
-    resize: struct { x: i32, y: i32, w: i32, h: i32 },
+    resize: struct { x: i32, y: i32, w: i32, h: i32, wmsz: usize = 0 },
 };
 
 pub const DiscreteOp = union(enum) {
@@ -163,6 +163,33 @@ pub const WindowWorker = struct {
                 );
             },
             .resize => |r| {
+                // Give grid-aware apps (putty, terminals) a chance to
+                // quantize the proposed rect before it lands — same trick
+                // as AltSnap PR #723: win32k marshals the RECT pointer for
+                // WM_SIZING; SMTO_ABORTIFHUNG caps a wedged target at 32ms.
+                var rc: t.RECT = .{ .left = r.x, .top = r.y, .right = r.x + r.w, .bottom = r.y + r.h };
+                var smto_result: usize = 0;
+                if (r.wmsz != 0 and t.SendMessageTimeoutW(
+                    hwnd,
+                    t.WM_SIZING,
+                    r.wmsz,
+                    @bitCast(@intFromPtr(&rc)),
+                    t.SMTO_ABORTIFHUNG,
+                    32,
+                    &smto_result,
+                ) != 0)
+                {
+                    _ = t.SetWindowPos(
+                        hwnd,
+                        null,
+                        rc.left,
+                        rc.top,
+                        rc.right - rc.left,
+                        rc.bottom - rc.top,
+                        t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER,
+                    );
+                    return;
+                }
                 _ = t.SetWindowPos(
                     hwnd,
                     null,
