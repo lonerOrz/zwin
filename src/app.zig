@@ -48,6 +48,7 @@ pub const App = struct {
     single_instance_mutex: ?t.HANDLE = null,
     nid: t.NOTIFYICONDATAW = undefined,
     last_config_write_ms: u64 = 0,
+    quitting: bool = false,
     current_session_id: u64 = 0,
     hicon_enabled: ?t.HICON = null,
     hicon_disabled: ?t.HICON = null,
@@ -90,13 +91,10 @@ pub const App = struct {
         _ = t.SetPriorityClass(t.GetCurrentProcess(), t.HIGH_PRIORITY_CLASS);
         _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
 
-        // No privilege auto-alignment here on purpose. Auto-relaunching at
-        // startup loops forever when the spawned successor ends up with the
-        // same token we already have (runas.exe /trustlevel quirks, UAC-off
-        // or built-in-Administrator machines where isAdmin() is always true,
-        // or a config race during handoff). We simply run with whatever
-        // token we got; the tray menu reflects reality and switching is a
-        // one-shot, user-initiated action only.
+        // Privilege alignment lives in main(), BEFORE anything here: it
+        // must run pre-mutex/pre-init so a successful handoff abandons zero
+        // resources, and a declined UAC falls straight through to a normal
+        // unelevated run below. start() itself contains no bounce logic.
         self.current_session_id = self.worker.invalidateSession();
         try self.createMessageWindow(hinst);
         try self.worker.start();
@@ -163,6 +161,7 @@ pub const App = struct {
             logger.err("App", "ShellExecuteW failed gle={d}", .{t.GetLastError()});
             return;
         }
+        self.quitting = true;
         _ = t.PostQuitMessage(0);
     }
 
@@ -191,15 +190,20 @@ pub const App = struct {
             _ = t.CloseHandle(m);
             self.single_instance_mutex = null;
         }
+        // AltSnap-style seamless handoff: drop the tray icon now so no
+        // ghost lingers while the successor spins up.
+        _ = t.Shell_NotifyIconW(t.NIM_DELETE, &self.nid);
 
         const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("runas"), path_buf[0..len :0].ptr, null, null, 1);
         if (@intFromPtr(res) > 32) {
+            self.quitting = true;
             _ = t.PostQuitMessage(0);
             return true;
         }
 
         logger.warn("App", "elevation cancelled by user, restoring mutex", .{});
         self.restoreMutex();
+        _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
         return false;
     }
 
@@ -222,19 +226,23 @@ pub const App = struct {
             _ = t.CloseHandle(m);
             self.single_instance_mutex = null;
         }
+        _ = t.Shell_NotifyIconW(t.NIM_DELETE, &self.nid);
 
         const exe_u8 = std.unicode.utf16LeToUtf8Alloc(self.allocator, path_buf[0..len]) catch {
             self.restoreMutex();
+            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
             return false;
         };
         defer self.allocator.free(exe_u8);
         const params_u8 = std.fmt.allocPrint(self.allocator, "/trustlevel:0x20000 \"{s}\"", .{exe_u8}) catch {
             self.restoreMutex();
+            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
             return false;
         };
         defer self.allocator.free(params_u8);
         const params_w = std.unicode.utf8ToUtf16LeAllocZ(self.allocator, params_u8) catch {
             self.restoreMutex();
+            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
             return false;
         };
         defer self.allocator.free(params_w);
@@ -242,12 +250,14 @@ pub const App = struct {
         // nShowCmd 0 keeps runas.exe's console window hidden.
         const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), std.unicode.utf8ToUtf16LeStringLiteral("runas.exe"), params_w.ptr, null, 0);
         if (@intFromPtr(res) > 32) {
+            self.quitting = true;
             _ = t.PostQuitMessage(0);
             return true;
         }
 
         logger.warn("App", "de-elevation launch failed, restoring mutex", .{});
         self.restoreMutex();
+        _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
         return false;
     }
 
@@ -332,17 +342,26 @@ pub const App = struct {
     }
 
     pub fn reloadConfig(self: *App) void {
+        // A late watcher echo must never fire a second relaunch while a
+        // respawn is already in flight (or during shutdown).
+        if (self.quitting) return;
         logger.info("App", "reloading config from disk", .{});
         const prev_autostart = self.config.enable_autostart;
+        const prev_elevated = self.config.enable_elevated;
         self.config = ConfigStore.load(self.allocator);
-        if (self.config.enable_autostart != prev_autostart) {
+        if (self.config.enable_autostart != prev_autostart or self.config.enable_elevated != prev_elevated) {
             self.syncAutostartState();
         }
-        // Never auto-relaunch from a passive file edit: our own saves used to
-        // re-enter here through the watcher and fire a second UAC prompt while
-        // the first was still pending. Point at the tray menu instead.
+        // Hand-edited elevation preference takes effect immediately via a
+        // one-shot token switch. De-elevation sync above runs while this
+        // process still holds the admin token it needs to drop the task.
         if (self.config.enable_elevated != self.isAdmin()) {
-            logger.info("App", "elevation preference differs from current token; apply via tray menu", .{});
+            logger.info("App", "elevation preference differs from token, applying relaunch...", .{});
+            const launched = if (self.config.enable_elevated)
+                self.relaunchAsAdmin()
+            else
+                self.relaunchUnelevated();
+            if (launched) return;
         }
         self.updateTrayState(self.hook_engine.paused.load(.acquire));
         self.refreshActiveBorder();
@@ -609,7 +628,10 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                         logger.info("App", "elevation preference rolled back to match current token", .{});
                     }
                 },
-                CMD_EXIT => _ = t.PostQuitMessage(0),
+                CMD_EXIT => {
+                    app.quitting = true;
+                    _ = t.PostQuitMessage(0);
+                },
                 else => {
                     logger.warn("Tray", "unhandled command id={d}", .{wParam & 0xFFFF});
                 },
