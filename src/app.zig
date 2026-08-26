@@ -24,6 +24,7 @@ const CMD_RELOAD_CONFIG: usize = 1004;
 const CMD_OPEN_CONFIG_DIR: usize = 1005;
 const CMD_OPEN_LOG_DIR: usize = 1006;
 const CMD_EXIT: usize = 1007;
+const CMD_RESTART: usize = 1008;
 
 const TIMER_BORDER_REINFORCE: usize = 2001;
 
@@ -37,6 +38,7 @@ pub const App = struct {
     hook_engine: InputEngine,
     watcher: ConfigWatcher = .{},
     main_hwnd: ?t.HWND = null,
+    single_instance_mutex: ?t.HANDLE = null,
     nid: t.NOTIFYICONDATAW = undefined,
     last_config_write_ms: u64 = 0,
     current_session_id: u64 = 0,
@@ -107,9 +109,38 @@ pub const App = struct {
             _ = t.DestroyWindow(hwnd);
         }
 
+        if (self.single_instance_mutex) |m| {
+            _ = t.CloseHandle(m);
+            self.single_instance_mutex = null;
+        }
+
         Logger.global = null;
         self.logger_inst.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn restart(self: *App) void {
+        logger.info("App", "restarting zwin instance...", .{});
+        var path_buf: [1024]u16 = undefined;
+        const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (len == 0 or len >= path_buf.len) {
+            logger.err("App", "failed to get module path for restart", .{});
+            return;
+        }
+
+        // Release the mutex BEFORE spawning the successor, or the new
+        // process sees ERROR_ALREADY_EXISTS and exits instantly.
+        if (self.single_instance_mutex) |m| {
+            _ = t.CloseHandle(m);
+            self.single_instance_mutex = null;
+        }
+
+        const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), path_buf[0..len :0].ptr, null, null, 1);
+        if (@intFromPtr(res) <= 32) {
+            logger.err("App", "ShellExecuteW failed gle={d}", .{t.GetLastError()});
+            return;
+        }
+        _ = t.PostQuitMessage(0);
     }
 
     pub fn reloadConfig(self: *App) void {
@@ -325,6 +356,7 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_OPEN_CONFIG_DIR, strings.menu_open_config);
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_OPEN_LOG_DIR, strings.menu_open_log);
                 _ = t.AppendMenuW(menu, t.MF_SEPARATOR, 0, null);
+                _ = t.AppendMenuW(menu, t.MF_STRING, CMD_RESTART, strings.menu_restart);
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_EXIT, strings.menu_exit);
 
                 _ = t.SetForegroundWindow(hwnd);
@@ -352,6 +384,7 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 CMD_RELOAD_CONFIG => app.reloadConfig(),
                 CMD_OPEN_CONFIG_DIR => openDirInExplorer(app, .config),
                 CMD_OPEN_LOG_DIR => openDirInExplorer(app, .log),
+                CMD_RESTART => app.restart(),
                 CMD_EXIT => _ = t.PostQuitMessage(0),
                 else => {
                     logger.warn("Tray", "unhandled command id={d}", .{wParam & 0xFFFF});

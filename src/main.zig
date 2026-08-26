@@ -6,9 +6,9 @@ const App = @import("app.zig").App;
 pub fn main() !void {
     const mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("zwin_SingleInstance_Mutex");
     const mutex = t.CreateMutexW(null, 1, mutex_name);
-    if (t.GetLastError() == t.ERROR_ALREADY_EXISTS) return;
-    defer {
+    if (t.GetLastError() == t.ERROR_ALREADY_EXISTS) {
         if (mutex) |m| _ = t.CloseHandle(m);
+        return;
     }
 
     var gpa = if (builtin.mode == .Debug)
@@ -28,6 +28,9 @@ pub fn main() !void {
 
     var app = try App.init(allocator);
     defer app.deinit();
+    // Ownership transfers to App: restart() must release it while the
+    // process is still alive, and deinit() closes it on normal exit.
+    app.single_instance_mutex = mutex;
 
     try app.start(hinst);
 
