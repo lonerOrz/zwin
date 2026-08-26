@@ -9,8 +9,10 @@ pub const ConfigWatcher = struct {
     thread: ?std.Thread = null,
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     notify_hwnd: ?t.HWND = null,
+    alloc: std.mem.Allocator = std.heap.page_allocator,
 
-    pub fn start(self: *ConfigWatcher, notify_hwnd: t.HWND) !void {
+    pub fn start(self: *ConfigWatcher, allocator: std.mem.Allocator, notify_hwnd: t.HWND) !void {
+        self.alloc = allocator;
         self.notify_hwnd = notify_hwnd;
         self.running.store(true, .release);
         self.thread = try std.Thread.spawn(.{}, watcherLoop, .{self});
@@ -25,12 +27,12 @@ pub const ConfigWatcher = struct {
     }
 
     fn watcherLoop(self: *ConfigWatcher) void {
-        const pa = std.heap.page_allocator;
-        const dir = Paths.getConfigDir(pa) catch return;
-        defer pa.free(dir);
+        const alloc = self.alloc;
+        const dir = Paths.getConfigDir(alloc) catch return;
+        defer alloc.free(dir);
 
-        const wide_dir = Paths.toWide(pa, dir) catch return;
-        defer pa.free(wide_dir);
+        const wide_dir = Paths.toWide(alloc, dir) catch return;
+        defer alloc.free(wide_dir);
 
         const h_dir = t.CreateFileW(
             wide_dir.ptr,

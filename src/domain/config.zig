@@ -1,5 +1,6 @@
 const std = @import("std");
 const Language = @import("../infra/i18n.zig").Language;
+pub const Color = @import("color.zig").Color;
 
 pub const Config = struct {
     language: Language = .auto,
@@ -13,7 +14,7 @@ pub const Config = struct {
     enable_autostart: bool = false,
     opacity_step: u8 = 15,
 
-    active_border_color: u32 = 0x000088FF,
+    active_border_color: Color = Color.rgb(255, 136, 0),
 
     min_window_width: i32 = 120,
     min_window_height: i32 = 100,
@@ -37,16 +38,9 @@ pub const Config = struct {
         \\}
     ;
 
-    pub fn colorToHex(color: u32, buf: *[7]u8) []const u8 {
-        const r: u8 = @truncate(color & 0xFF);
-        const g: u8 = @truncate((color >> 8) & 0xFF);
-        const b: u8 = @truncate((color >> 16) & 0xFF);
-        return std.fmt.bufPrint(buf, "#{X:0>2}{X:0>2}{X:0>2}", .{ r, g, b }) catch "#FF8800";
-    }
-
     pub fn serializeToJson(self: *const Config, allocator: std.mem.Allocator) ![]u8 {
         var hex_buf: [7]u8 = undefined;
-        const hex = colorToHex(self.active_border_color, &hex_buf);
+        const hex = self.active_border_color.toHex(&hex_buf);
 
         return std.fmt.allocPrint(
             allocator,
@@ -81,18 +75,6 @@ pub const Config = struct {
                 self.log_max_days,
             },
         );
-    }
-
-    pub fn parseHexColor(hex: []const u8) ?u32 {
-        var str = hex;
-        if (std.mem.startsWith(u8, str, "#")) str = str[1..];
-        if (str.len != 6) return null;
-
-        const rgb = std.fmt.parseInt(u32, str, 16) catch return null;
-        const r = (rgb >> 16) & 0xFF;
-        const g = (rgb >> 8) & 0xFF;
-        const b = rgb & 0xFF;
-        return (b << 16) | (g << 8) | r;
     }
 
     pub fn loadFromJson(allocator: std.mem.Allocator, json_bytes: []const u8) Config {
@@ -137,25 +119,26 @@ pub const Config = struct {
         };
 
         if (v.active_border_hex) |hex| {
-            if (parseHexColor(hex)) |c| result.active_border_color = c;
+            if (Color.fromHex(hex)) |c| result.active_border_color = c;
         }
 
         return result;
     }
 };
 
-test "parseHexColor maps to COLORREF" {
-    try std.testing.expectEqual(@as(u32, 0x000088FF), Config.parseHexColor("#FF8800").?);
-    try std.testing.expectEqual(@as(u32, 0x000000FF), Config.parseHexColor("FF0000").?);
-    try std.testing.expectEqual(@as(?u32, null), Config.parseHexColor("#XYZ"));
-    try std.testing.expectEqual(@as(?u32, null), Config.parseHexColor("#12345"));
-}
-
 test "loadFromJson overrides defaults" {
     const c = Config.loadFromJson(std.testing.allocator, "{\"active_border_hex\":\"#00FF00\",\"opacity_step\":40,\"unknown_field\":1}");
-    try std.testing.expectEqual(@as(u32, 0x0000FF00), c.active_border_color);
+    try std.testing.expectEqual(Color.rgb(0, 255, 0), c.active_border_color);
     try std.testing.expectEqual(@as(u8, 40), c.opacity_step);
     try std.testing.expectEqual(Config{}, Config.loadFromJson(std.testing.allocator, "not json"));
+}
+
+test "loadFromJson keeps default color on malformed hex without crashing" {
+    const c = Config.loadFromJson(std.testing.allocator, "{\"active_border_hex\":\"#XYZ\"}");
+    try std.testing.expectEqual(Config{}, c);
+
+    const short = Config.loadFromJson(std.testing.allocator, "{\"active_border_hex\":\"FF880\"}");
+    try std.testing.expectEqual(Config{}, short);
 }
 
 test "loadFromJson clamps out-of-range numeric settings" {
@@ -174,7 +157,7 @@ test "serializeToJson roundtrips through loadFromJson" {
     const allocator = std.testing.allocator;
     var cfg = Config{ .language = .zh_CN, .opacity_step = 33, .min_window_width = 200 };
     cfg.key_center = 'Z';
-    cfg.active_border_color = 0x00AA55;
+    cfg.active_border_color = Color.rgb(0x55, 0xAA, 0x00);
 
     const json = try cfg.serializeToJson(allocator);
     defer allocator.free(json);

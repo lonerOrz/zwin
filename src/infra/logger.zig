@@ -24,11 +24,12 @@ pub const Logger = struct {
     min_level: LogLevel = .info,
     max_days: u32 = 7,
     open_day: u32 = 0,
+    alloc: std.mem.Allocator,
 
     pub var global: ?*Logger = null;
 
-    pub fn init(max_days: u32) Logger {
-        var self = Logger{ .max_days = max_days };
+    pub fn init(alloc: std.mem.Allocator, max_days: u32) Logger {
+        var self = Logger{ .alloc = alloc, .max_days = max_days };
         self.rotateFile();
         return self;
     }
@@ -43,12 +44,11 @@ pub const Logger = struct {
     }
 
     fn rotateFile(self: *Logger) void {
-        const pa = std.heap.page_allocator;
-        const dir = Paths.getLogDir(pa) catch return;
-        defer pa.free(dir);
+        const dir = Paths.getLogDir(self.alloc) catch return;
+        defer self.alloc.free(dir);
 
         Paths.makeDirs(dir);
-        Paths.deleteOldFiles(dir, "zwin-", ".log", self.max_days);
+        Paths.deleteOldFiles(self.alloc, dir, "zwin-", ".log", self.max_days);
 
         var st: t.SYSTEMTIME = undefined;
         t.GetLocalTime(&st);

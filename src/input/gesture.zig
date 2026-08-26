@@ -1,18 +1,19 @@
 const t = @import("../platform/win32.zig");
 const geom = @import("../calc/geometry.zig");
+const WindowTarget = @import("../domain/window_target.zig").WindowTarget;
 const WindowWorker = @import("../infra/worker.zig").WindowWorker;
 const Config = @import("../domain/config.zig").Config;
 
 pub const GestureState = union(enum) {
     idle,
     dragging: struct {
-        hwnd: t.HWND,
+        target: WindowTarget,
         start_pt: geom.Point,
         start_bounds: geom.Rect,
         dpi: u32,
     },
     resizing: struct {
-        hwnd: t.HWND,
+        target: WindowTarget,
         start_pt: geom.Point,
         start_bounds: geom.Rect,
         sector: geom.Sector,
@@ -33,25 +34,25 @@ pub const GestureStateMachine = struct {
         return .{ .worker = worker, .config = config };
     }
 
-    pub fn startDrag(self: *GestureStateMachine, hwnd: t.HWND, cursor: geom.Point, bounds: geom.Rect) void {
+    pub fn startDrag(self: *GestureStateMachine, target: WindowTarget, cursor: geom.Point, bounds: geom.Rect) void {
         self.state = .{ .dragging = .{
-            .hwnd = hwnd,
+            .target = target,
             .start_pt = cursor,
             .start_bounds = bounds,
-            .dpi = t.GetDpiForWindow(hwnd),
+            .dpi = t.GetDpiForWindow(target.hwnd),
         } };
     }
 
     pub fn startResize(
         self: *GestureStateMachine,
-        hwnd: t.HWND,
+        target: WindowTarget,
         cursor: geom.Point,
         bounds: geom.Rect,
         sector: geom.Sector,
         pad: geom.Padding,
     ) void {
         self.state = .{ .resizing = .{
-            .hwnd = hwnd,
+            .target = target,
             .start_pt = cursor,
             .start_bounds = bounds,
             .sector = sector,
@@ -64,26 +65,22 @@ pub const GestureStateMachine = struct {
             .idle => {},
             .dragging => |d| {
                 var a = d;
-                const dpi = t.GetDpiForWindow(d.hwnd);
-                if (dpi != 0 and dpi != d.dpi) {
+                const dpi = t.GetDpiForWindow(a.target.hwnd);
+                if (dpi != 0 and dpi != a.dpi) {
                     var rc: t.RECT = undefined;
-                    if (t.GetWindowRect(d.hwnd, &rc) == 0) return;
+                    if (t.GetWindowRect(a.target.hwnd, &rc) == 0) return;
                     a = .{
-                        .hwnd = d.hwnd,
+                        .target = a.target,
                         .start_pt = current_pt,
                         .start_bounds = rectFromWin32(rc),
                         .dpi = dpi,
                     };
                     self.state = .{ .dragging = a };
                 }
-                self.worker.postCoalesced(.{
-                    .hwnd = a.hwnd,
+                self.worker.postStreaming(a.target, .{ .move = .{
                     .x = a.start_bounds.left + (current_pt.x - a.start_pt.x),
                     .y = a.start_bounds.top + (current_pt.y - a.start_pt.y),
-                    .w = 0,
-                    .h = 0,
-                    .flags = t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER,
-                });
+                } });
             },
             .resizing => |r| {
                 const delta: geom.Point = .{
@@ -98,14 +95,12 @@ pub const GestureStateMachine = struct {
                     self.config.min_window_height,
                 );
                 const pad = r.shadow_pad;
-                self.worker.postCoalesced(.{
-                    .hwnd = r.hwnd,
+                self.worker.postStreaming(r.target, .{ .resize = .{
                     .x = rc.left - pad.l,
                     .y = rc.top - pad.t,
                     .w = rc.width() + pad.l + pad.r,
                     .h = rc.height() + pad.t + pad.b,
-                    .flags = t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER,
-                });
+                } });
             },
         }
     }

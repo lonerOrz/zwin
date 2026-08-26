@@ -1,7 +1,11 @@
 const std = @import("std");
 const t = @import("platform/win32.zig");
+const geom = @import("calc/geometry.zig");
 const Paths = @import("platform/paths.zig").Paths;
+const Window = @import("platform/window.zig").Window;
 const Config = @import("domain/config.zig").Config;
+const UserIntent = @import("domain/intent.zig").UserIntent;
+const WindowTarget = @import("domain/window_target.zig").WindowTarget;
 const Logger = @import("infra/logger.zig").Logger;
 const logger = @import("infra/logger.zig");
 const WindowWorker = @import("infra/worker.zig").WindowWorker;
@@ -9,7 +13,7 @@ const ConfigWatcher = @import("infra/watcher.zig").ConfigWatcher;
 const ConfigStore = @import("infra/config_store.zig").ConfigStore;
 const BorderManager = @import("wm/border.zig").BorderManager;
 const GestureStateMachine = @import("input/gesture.zig").GestureStateMachine;
-const HookDispatcher = @import("input/hook.zig").HookDispatcher;
+const InputEngine = @import("input/engine.zig").InputEngine;
 const Autostart = @import("platform/autostart.zig").Autostart;
 const I18n = @import("infra/i18n.zig").I18n;
 
@@ -30,11 +34,12 @@ pub const App = struct {
     worker: WindowWorker,
     border_mgr: BorderManager,
     gesture: GestureStateMachine,
-    hook_engine: HookDispatcher,
+    hook_engine: InputEngine,
     watcher: ConfigWatcher = .{},
     main_hwnd: ?t.HWND = null,
     nid: t.NOTIFYICONDATAW = undefined,
     last_config_write_ms: u64 = 0,
+    current_session_id: u64 = 0,
 
     fg_hook: ?t.HWINEVENTHOOK = null,
     obj_hook: ?t.HWINEVENTHOOK = null,
@@ -46,7 +51,7 @@ pub const App = struct {
         errdefer allocator.destroy(self);
 
         const config = ConfigStore.load(allocator);
-        const logger_inst = Logger.init(config.log_max_days);
+        const logger_inst = Logger.init(allocator, config.log_max_days);
 
         self.* = .{
             .allocator = allocator,
@@ -62,17 +67,18 @@ pub const App = struct {
 
         self.border_mgr = BorderManager.init(&self.config);
         self.gesture = GestureStateMachine.init(&self.worker, &self.config);
-        self.hook_engine = HookDispatcher.init(&self.gesture, &self.config);
+        self.hook_engine = InputEngine.init(&self.gesture, &self.config);
 
         App.global = self;
         return self;
     }
 
     pub fn start(self: *App, hinst: ?t.HINSTANCE) !void {
-        try self.worker.start();
-        try self.hook_engine.install(hinst);
+        self.current_session_id = self.worker.invalidateSession();
         try self.createMessageWindow(hinst);
-        try self.watcher.start(self.main_hwnd.?);
+        try self.worker.start();
+        try self.hook_engine.install(hinst, self.main_hwnd.?);
+        try self.watcher.start(self.allocator, self.main_hwnd.?);
 
         Autostart.setEnabled(self.config.enable_autostart);
 
@@ -131,6 +137,69 @@ pub const App = struct {
         if (self.main_hwnd) |hwnd| {
             _ = t.SetTimer(hwnd, TIMER_BORDER_REINFORCE, 60, null);
         }
+    }
+
+    /// Single dispatch point for all user intents. Runs on the main thread
+    /// only; hooks never resolve targets or compute geometry themselves.
+    pub fn handleIntent(self: *App, intent: UserIntent) void {
+        switch (intent) {
+            .center_active_window => {
+                const target = self.resolveActiveTarget() orelse return;
+                const win = Window.init(target.hwnd);
+                win.ensureRestored();
+                if (win.getMonitorWorkArea()) |wa| {
+                    const bounds = win.getPhysicalBounds();
+                    const pad = win.getShadowPadding();
+                    const centered = geom.calculateCenterRect(wa, bounds, pad);
+                    self.worker.postDiscrete(target, .{ .set_bounds = .{
+                        .x = centered.left,
+                        .y = centered.top,
+                        .w = centered.width(),
+                        .h = centered.height(),
+                    } });
+                }
+            },
+            .toggle_active_topmost => {
+                const target = self.resolveActiveTarget() orelse return;
+                const ex_style = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
+                const is_topmost = (ex_style & t.WS_EX_TOPMOST) != 0;
+                self.worker.postDiscrete(target, .{
+                    .set_topmost = .{ .is_topmost = !is_topmost },
+                });
+            },
+            .close_active_window => {
+                const target = self.resolveActiveTarget() orelse return;
+                Window.init(target.hwnd).close();
+            },
+            // Drag/resize starts are NOT intents: they must begin
+            // synchronously with the physical button press inside the mouse
+            // hook (see engine.zig), or a fast click's button-up overtakes
+            // the async dispatch and strands the gesture state machine.
+            .minimize_at => |m| {
+                const target = self.resolveTargetAtPoint(m.pt) orelse return;
+                Window.init(target.hwnd).minimize();
+            },
+            .adjust_opacity_at => |op| {
+                const target = self.resolveTargetAtPoint(op.pt) orelse return;
+                Window.init(target.hwnd).adjustOpacity(op.delta);
+            },
+        }
+    }
+
+    fn resolveActiveTarget(self: *App) ?WindowTarget {
+        const raw_fg = t.GetForegroundWindow() orelse return null;
+        const top = Window.getTrueTopLevel(raw_fg) orelse return null;
+        const win = Window.init(top);
+        if (win.isExclusiveFullScreen()) return null;
+        return .{ .hwnd = top, .session_id = self.current_session_id };
+    }
+
+    fn resolveTargetAtPoint(self: *App, pt: geom.Point) ?WindowTarget {
+        const raw_hwnd = t.WindowFromPoint(.{ .x = pt.x, .y = pt.y }) orelse return null;
+        const top = Window.getTrueTopLevel(raw_hwnd) orelse return null;
+        const win = Window.init(top);
+        if (win.isExclusiveFullScreen()) return null;
+        return .{ .hwnd = top, .session_id = self.current_session_id };
     }
 
     fn refreshActiveBorder(self: *App) void {
@@ -304,6 +373,11 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 app.reloadConfig();
             }
         },
+        t.WM_APP_INTENT => {
+            while (app.hook_engine.nextIntent()) |intent| {
+                app.handleIntent(intent);
+            }
+        },
         else => return t.DefWindowProcW(hwnd, msg, wParam, lParam),
     }
     return 0;
@@ -316,6 +390,6 @@ fn openDirInExplorer(app: *App, kind: enum { config, log }) void {
         Paths.getLogDir(app.allocator);
     if (dir) |d| {
         defer app.allocator.free(d);
-        Paths.openFolderInExplorer(d);
+        Paths.openFolderInExplorer(app.allocator, d);
     } else |_| {}
 }

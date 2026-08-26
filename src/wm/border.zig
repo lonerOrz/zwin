@@ -46,7 +46,8 @@ pub const BorderManager = struct {
 
     fn applyBorder(self: *BorderManager, hwnd: t.HWND) void {
         if (t.IsWindowVisible(hwnd) != 0) {
-            const hr = t.DwmSetWindowAttribute(hwnd, t.DWMWA_BORDER_COLOR, &self.config.active_border_color, @sizeOf(u32));
+            const cref = self.config.active_border_color.toColorRef();
+            const hr = t.DwmSetWindowAttribute(hwnd, t.DWMWA_BORDER_COLOR, &cref, @sizeOf(u32));
             if (hr == 0) {
                 self.last_active = hwnd;
             } else {

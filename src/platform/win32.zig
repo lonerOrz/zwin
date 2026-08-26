@@ -297,6 +297,9 @@ pub const WM_MOUSEWHEEL: u32 = 0x020A;
 pub const WM_USER: u32 = 0x0400;
 pub const WM_TRAY: u32 = WM_USER + 1;
 pub const WM_APP_EVENT: u32 = WM_USER + 2;
+pub const WM_APP_INTENT: u32 = WM_USER + 3;
+/// Win32 MAX_PATH (including the terminating NUL).
+pub const MAX_PATH: usize = 260;
 pub const WM_COMMAND: u32 = 0x0111;
 pub const WM_SYSCOMMAND: u32 = 0x0112;
 pub const WM_CONTEXTMENU: u32 = 0x007B;

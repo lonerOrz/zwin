@@ -136,6 +136,20 @@ test "calculateSector 3x3 division" {
     try std.testing.expectEqual(Sector.bottom_right, calculateSector(300, 300, 290, 290));
 }
 
+test "calculateSector degrades to center on zero or negative extents" {
+    try std.testing.expectEqual(Sector.center, calculateSector(0, 0, 5, 5));
+    try std.testing.expectEqual(Sector.center, calculateSector(-100, -50, 1, 1));
+    try std.testing.expectEqual(Sector.center, calculateSector(300, 0, 10, 10));
+}
+
+test "calculateCenterRect keeps window inside work area for tiny windows" {
+    const wa: Rect = .{ .left = 0, .top = 0, .right = 800, .bottom = 600 };
+    const tiny: Rect = .{ .left = 0, .top = 0, .right = 40, .bottom = 30 };
+    const c = calculateCenterRect(wa, tiny, .{});
+    try std.testing.expectEqual(@as(i32, 380), c.left);
+    try std.testing.expectEqual(@as(i32, 285), c.top);
+}
+
 test "calculateResizedRect clamp minimum dimensions" {
     const start: Rect = .{ .left = 100, .top = 100, .right = 300, .bottom = 300 };
     const delta: Point = .{ .x = -150, .y = -150 };
