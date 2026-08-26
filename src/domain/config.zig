@@ -12,6 +12,7 @@ pub const Config = struct {
     enable_border: bool = true,
     enable_wheel_opacity: bool = true,
     enable_autostart: bool = false,
+    enable_elevated: bool = false,
     opacity_step: u8 = 15,
 
     active_border_color: Color = Color.rgb(255, 136, 0),
@@ -30,6 +31,7 @@ pub const Config = struct {
         \\  "enable_border": true,
         \\  "enable_wheel_opacity": true,
         \\  "enable_autostart": false,
+        \\  "enable_elevated": false,
         \\  "opacity_step": 15,
         \\  "active_border_hex": "#FF8800",
         \\  "min_window_width": 120,
@@ -52,6 +54,7 @@ pub const Config = struct {
             \\  "enable_border": {},
             \\  "enable_wheel_opacity": {},
             \\  "enable_autostart": {},
+            \\  "enable_elevated": {},
             \\  "opacity_step": {d},
             \\  "active_border_hex": "{s}",
             \\  "min_window_width": {d},
@@ -68,6 +71,7 @@ pub const Config = struct {
                 self.enable_border,
                 self.enable_wheel_opacity,
                 self.enable_autostart,
+                self.enable_elevated,
                 self.opacity_step,
                 hex,
                 self.min_window_width,
@@ -88,6 +92,7 @@ pub const Config = struct {
             enable_border: ?bool = null,
             enable_wheel_opacity: ?bool = null,
             enable_autostart: ?bool = null,
+            enable_elevated: ?bool = null,
             opacity_step: ?u8 = null,
             active_border_hex: ?[]const u8 = null,
             min_window_width: ?i32 = null,
@@ -103,6 +108,7 @@ pub const Config = struct {
         if (v.enable_border) |eb| result.enable_border = eb;
         if (v.enable_wheel_opacity) |wo| result.enable_wheel_opacity = wo;
         if (v.enable_autostart) |ea| result.enable_autostart = ea;
+        if (v.enable_elevated) |ee| result.enable_elevated = ee;
         if (v.opacity_step) |os| result.opacity_step = std.math.clamp(os, 1, 100);
         if (v.min_window_width) |mw| result.min_window_width = @max(mw, 50);
         if (v.min_window_height) |mh| result.min_window_height = @max(mh, 50);
@@ -155,7 +161,7 @@ test "loadFromJson clamps out-of-range numeric settings" {
 
 test "serializeToJson roundtrips through loadFromJson" {
     const allocator = std.testing.allocator;
-    var cfg = Config{ .language = .zh_CN, .opacity_step = 33, .min_window_width = 200 };
+    var cfg = Config{ .language = .zh_CN, .enable_elevated = true, .opacity_step = 33, .min_window_width = 200 };
     cfg.key_center = 'Z';
     cfg.active_border_color = Color.rgb(0x55, 0xAA, 0x00);
 

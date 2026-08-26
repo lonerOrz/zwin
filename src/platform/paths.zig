@@ -59,14 +59,22 @@ pub const Paths = struct {
         var wide_buf: [t.MAX_PATH:0]u16 = undefined;
         const wide = try toWideFixed(path_u8, &wide_buf);
         const h = t.CreateFileW(wide.ptr, t.GENERIC_READ, t.FILE_SHARE_READ | t.FILE_SHARE_WRITE, null, t.OPEN_EXISTING, t.FILE_ATTRIBUTE_NORMAL, null);
-        if (h == t.INVALID_HANDLE_VALUE) return error.OpenFailed;
+        if (h == t.INVALID_HANDLE_VALUE) {
+            // Callers must be able to tell "no config yet" apart from a
+            // transient sharing conflict so they never overwrite real data.
+            return switch (t.GetLastError()) {
+                t.ERROR_FILE_NOT_FOUND, t.ERROR_PATH_NOT_FOUND => error.FileNotFound,
+                t.ERROR_SHARING_VIOLATION => error.SharingViolation,
+                else => error.OpenFailed,
+            };
+        }
         return h;
     }
 
     pub fn writeFile(path_u8: []const u8, content: []const u8) !void {
         var wide_buf: [t.MAX_PATH:0]u16 = undefined;
         const wide = try toWideFixed(path_u8, &wide_buf);
-        const h = t.CreateFileW(wide.ptr, t.GENERIC_WRITE, 0, null, t.CREATE_ALWAYS, t.FILE_ATTRIBUTE_NORMAL, null);
+        const h = t.CreateFileW(wide.ptr, t.GENERIC_WRITE, t.FILE_SHARE_READ, null, t.CREATE_ALWAYS, t.FILE_ATTRIBUTE_NORMAL, null);
         if (h == t.INVALID_HANDLE_VALUE) return error.CreateFailed;
         defer _ = t.CloseHandle(h);
 

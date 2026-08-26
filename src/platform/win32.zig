@@ -182,6 +182,40 @@ pub extern "kernel32" fn CancelIoEx(hFile: HANDLE, lpOverlapped: ?*OVERLAPPED) c
 pub extern "kernel32" fn CreateEventW(lpEventAttributes: ?*anyopaque, bManualReset: BOOL, bInitialState: BOOL, lpName: ?[*:0]const u16) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn ResetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: u32) callconv(.winapi) u32;
+pub extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
+pub extern "kernel32" fn GetCurrentThread() callconv(.winapi) HANDLE;
+pub extern "kernel32" fn SetPriorityClass(hProcess: HANDLE, dwPriorityClass: u32) callconv(.winapi) BOOL;
+pub extern "kernel32" fn SetThreadPriority(hThread: HANDLE, nPriority: i32) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CreateProcessW(lpApplicationName: ?[*:0]const u16, lpCommandLine: ?[*:0]u16, lpProcessAttributes: ?*anyopaque, lpThreadAttributes: ?*anyopaque, bInheritHandles: BOOL, dwCreationFlags: u32, lpEnvironment: ?*anyopaque, lpCurrentDirectory: ?[*:0]const u16, lpStartupInfo: *STARTUPINFOW, lpProcessInformation: *PROCESS_INFORMATION) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetExitCodeProcess(hProcess: HANDLE, lpExitCode: *u32) callconv(.winapi) BOOL;
+pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+pub const STARTUPINFOW = extern struct {
+    cb: u32 = 0,
+    lpReserved: ?[*:0]u16 = null,
+    lpDesktop: ?[*:0]u16 = null,
+    lpTitle: ?[*:0]u16 = null,
+    dwX: u32 = 0,
+    dwY: u32 = 0,
+    dwXSize: u32 = 0,
+    dwYSize: u32 = 0,
+    dwXCountChars: u32 = 0,
+    dwYCountFillChars: u32 = 0,
+    dwFillAttribute: u32 = 0,
+    dwFlags: u32 = 0,
+    wShowWindow: u16 = 0,
+    cbReserved2: u16 = 0,
+    lpReserved2: ?*u8 = null,
+    hStdInput: ?HANDLE = null,
+    hStdOutput: ?HANDLE = null,
+    hStdError: ?HANDLE = null,
+};
+pub const PROCESS_INFORMATION = extern struct {
+    hProcess: HANDLE,
+    hThread: HANDLE,
+    dwProcessId: u32,
+    dwThreadId: u32,
+};
 
 pub const OVERLAPPED = extern struct {
     Internal: usize = 0,
@@ -243,7 +277,9 @@ pub const KEY_QUERY_VALUE: u32 = 0x0001;
 pub const KEY_SET_VALUE: u32 = 0x0002;
 pub const REG_SZ: u32 = 1;
 pub const ERROR_SUCCESS: i32 = 0;
-pub const ERROR_FILE_NOT_FOUND: i32 = 2;
+pub const ERROR_FILE_NOT_FOUND = 2;
+pub const ERROR_PATH_NOT_FOUND: u32 = 3;
+pub const ERROR_SHARING_VIOLATION: u32 = 32;
 
 pub extern "advapi32" fn RegOpenKeyExW(hKey: HKEY, lpSubKey: [*:0]const u16, ulOptions: u32, samDesired: u32, phkResult: *HKEY) callconv(.winapi) i32;
 pub extern "advapi32" fn RegQueryValueExW(hKey: HKEY, lpValueName: [*:0]const u16, lpReserved: ?*anyopaque, lpType: ?*u32, lpData: ?*anyopaque, lpcbData: ?*u32) callconv(.winapi) i32;
@@ -273,6 +309,7 @@ pub extern "user32" fn CreateWindowExW(dwExStyle: u32, lpClassName: [*:0]const u
 pub extern "user32" fn DestroyWindow(hWnd: HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn LoadIconW(hInstance: ?HINSTANCE, lpIconName: ?[*:0]const u16) callconv(.winapi) ?HICON;
 pub extern "shell32" fn Shell_NotifyIconW(dwMessage: u32, lpData: *NOTIFYICONDATAW) callconv(.winapi) BOOL;
+pub extern "shell32" fn IsUserAnAdmin() callconv(.winapi) BOOL;
 pub extern "shell32" fn ShellExecuteW(hwnd: ?HWND, lpOperation: ?[*:0]const u16, lpFile: [*:0]const u16, lpParameters: ?[*:0]const u16, lpDirectory: ?[*:0]const u16, nShowCmd: i32) callconv(.winapi) ?HINSTANCE;
 pub extern "dwmapi" fn DwmGetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
 pub extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
@@ -364,6 +401,8 @@ pub const MF_CHECKED: u32 = 0x00000008;
 pub const MF_UNCHECKED: u32 = 0x00000000;
 pub const TPM_RIGHTBUTTON: u32 = 0x0002;
 pub const ERROR_ALREADY_EXISTS: u32 = 183;
+pub const HIGH_PRIORITY_CLASS: u32 = 0x00000080;
+pub const THREAD_PRIORITY_HIGHEST: i32 = 2;
 
 pub const GENERIC_READ: u32 = 0x80000000;
 pub const GENERIC_WRITE: u32 = 0x40000000;

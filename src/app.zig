@@ -25,6 +25,13 @@ const CMD_OPEN_CONFIG_DIR: usize = 1005;
 const CMD_OPEN_LOG_DIR: usize = 1006;
 const CMD_EXIT: usize = 1007;
 const CMD_RESTART: usize = 1008;
+const CMD_TOGGLE_ADMIN: usize = 1009;
+
+/// Shared with main.zig so relaunchAsAdmin can re-acquire the exact same
+/// named mutex after a cancelled UAC prompt.
+pub const single_instance_mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("zwin_SingleInstance_Mutex");
+
+const elevation_task_name = "zwin";
 
 const TIMER_BORDER_REINFORCE: usize = 2001;
 
@@ -78,20 +85,34 @@ pub const App = struct {
     }
 
     pub fn start(self: *App, hinst: ?t.HINSTANCE) !void {
+        // Elevate scheduling priority so hotkeys and message dispatch stay
+        // responsive under full CPU load (avoids LowLevelHooksTimeout).
+        _ = t.SetPriorityClass(t.GetCurrentProcess(), t.HIGH_PRIORITY_CLASS);
+        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
+
+        // No privilege auto-alignment here on purpose. Auto-relaunching at
+        // startup loops forever when the spawned successor ends up with the
+        // same token we already have (runas.exe /trustlevel quirks, UAC-off
+        // or built-in-Administrator machines where isAdmin() is always true,
+        // or a config race during handoff). We simply run with whatever
+        // token we got; the tray menu reflects reality and switching is a
+        // one-shot, user-initiated action only.
         self.current_session_id = self.worker.invalidateSession();
         try self.createMessageWindow(hinst);
         try self.worker.start();
         try self.hook_engine.install(hinst, self.main_hwnd.?);
         try self.watcher.start(self.allocator, self.main_hwnd.?);
 
-        Autostart.setEnabled(self.config.enable_autostart);
+        // Registry Run and the scheduled task are mutually exclusive: both
+        // firing at logon would race for the mutex and fight over config.json.
+        self.syncAutostartState();
 
         self.fg_hook = t.SetWinEventHook(t.EVENT_SYSTEM_FOREGROUND, t.EVENT_SYSTEM_MINIMIZEEND, null, winEventCallback, 0, 0, t.WINEVENT_OUTOFCONTEXT);
         self.obj_hook = t.SetWinEventHook(t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE, null, winEventCallback, 0, 0, t.WINEVENT_OUTOFCONTEXT);
         self.initTrayIcon(hinst);
 
         self.refreshActiveBorder();
-        logger.info("App", "zwin runtime ready", .{});
+        logger.info("App", "zwin runtime ready (elevated={})", .{self.isAdmin()});
     }
 
     pub fn deinit(self: *App) void {
@@ -145,12 +166,183 @@ pub const App = struct {
         _ = t.PostQuitMessage(0);
     }
 
+    /// True when the process runs elevated (breaks the UIPI barrier so
+    /// hooks also see admin windows like Task Manager).
+    pub fn isAdmin(_: *const App) bool {
+        return t.IsUserAnAdmin() != 0;
+    }
+
+    /// UAC-elevate and relaunch. Releases the single-instance mutex first
+    /// (same handoff as restart); if the user cancels the prompt, re-create
+    /// it so protection is restored.
+    pub fn relaunchAsAdmin(self: *App) bool {
+        if (self.isAdmin()) return false;
+
+        logger.info("App", "elevating zwin to administrator...", .{});
+        var path_buf: [1024]u16 = undefined;
+        const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (len == 0 or len >= path_buf.len) {
+            logger.err("App", "failed to get module path for elevation", .{});
+            return false;
+        }
+
+        // Successor must be able to acquire the mutex while we are alive.
+        if (self.single_instance_mutex) |m| {
+            _ = t.CloseHandle(m);
+            self.single_instance_mutex = null;
+        }
+
+        const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("runas"), path_buf[0..len :0].ptr, null, null, 1);
+        if (@intFromPtr(res) > 32) {
+            _ = t.PostQuitMessage(0);
+            return true;
+        }
+
+        logger.warn("App", "elevation cancelled by user, restoring mutex", .{});
+        self.restoreMutex();
+        return false;
+    }
+
+    /// Relaunch WITHOUT elevation. A process cannot drop its own token, so
+    /// we go through runas.exe with the Basic User trust level (documented
+    /// Windows mechanism); the child then runs as a standard user. zwin only
+    /// writes under %APPDATA%, which the restricted token may still touch.
+    pub fn relaunchUnelevated(self: *App) bool {
+        if (!self.isAdmin()) return false;
+
+        logger.info("App", "relaunching zwin without elevation...", .{});
+        var path_buf: [1024]u16 = undefined;
+        const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (len == 0 or len >= path_buf.len) {
+            logger.err("App", "failed to get module path for de-elevation", .{});
+            return false;
+        }
+
+        if (self.single_instance_mutex) |m| {
+            _ = t.CloseHandle(m);
+            self.single_instance_mutex = null;
+        }
+
+        const exe_u8 = std.unicode.utf16LeToUtf8Alloc(self.allocator, path_buf[0..len]) catch {
+            self.restoreMutex();
+            return false;
+        };
+        defer self.allocator.free(exe_u8);
+        const params_u8 = std.fmt.allocPrint(self.allocator, "/trustlevel:0x20000 \"{s}\"", .{exe_u8}) catch {
+            self.restoreMutex();
+            return false;
+        };
+        defer self.allocator.free(params_u8);
+        const params_w = std.unicode.utf8ToUtf16LeAllocZ(self.allocator, params_u8) catch {
+            self.restoreMutex();
+            return false;
+        };
+        defer self.allocator.free(params_w);
+
+        // nShowCmd 0 keeps runas.exe's console window hidden.
+        const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), std.unicode.utf8ToUtf16LeStringLiteral("runas.exe"), params_w.ptr, null, 0);
+        if (@intFromPtr(res) > 32) {
+            _ = t.PostQuitMessage(0);
+            return true;
+        }
+
+        logger.warn("App", "de-elevation launch failed, restoring mutex", .{});
+        self.restoreMutex();
+        return false;
+    }
+
+    fn restoreMutex(self: *App) void {
+        self.single_instance_mutex = t.CreateMutexW(null, 1, single_instance_mutex_name);
+        if (self.single_instance_mutex == null) {
+            logger.err("App", "mutex re-create failed gle={d}", .{t.GetLastError()});
+        }
+    }
+
+    /// Run schtasks.exe with no console flash; true when it exits 0.
+    /// Takes a raw argument string (CreateProcessW command line, no shell).
+    fn runSchtasks(self: *App, args_u8: []const u8) bool {
+        const cmd_u8 = std.fmt.allocPrint(self.allocator, "schtasks.exe {s}", .{args_u8}) catch return false;
+        defer self.allocator.free(cmd_u8);
+        const cmd_wide = std.unicode.utf8ToUtf16LeAllocZ(self.allocator, cmd_u8) catch return false;
+        defer self.allocator.free(cmd_wide);
+
+        var si: t.STARTUPINFOW = .{};
+        si.cb = @sizeOf(t.STARTUPINFOW);
+        var pi: t.PROCESS_INFORMATION = undefined;
+        if (t.CreateProcessW(null, cmd_wide.ptr, null, null, 0, t.CREATE_NO_WINDOW, null, null, &si, &pi) == 0) return false;
+        _ = t.CloseHandle(pi.hThread);
+        defer _ = t.CloseHandle(pi.hProcess);
+        _ = t.WaitForSingleObject(pi.hProcess, 10_000);
+        var exit_code: u32 = 1;
+        _ = t.GetExitCodeProcess(pi.hProcess, &exit_code);
+        return exit_code == 0;
+    }
+
+    /// Register an ONLOGON task at HIGHEST run level so future logins start
+    /// zwin elevated with zero UAC prompts (same approach as AltSnap's
+    /// sch_On.bat). Creating it needs admin, so only call when elevated.
+    fn ensureElevationTask(self: *App) void {
+        var path_buf: [1024]u16 = undefined;
+        const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (len == 0 or len >= path_buf.len) return;
+        const exe_u8 = std.unicode.utf16LeToUtf8Alloc(self.allocator, path_buf[0..len]) catch return;
+        defer self.allocator.free(exe_u8);
+        // \" keeps the quotes in the registered task so paths with spaces work.
+        const args = std.fmt.allocPrint(self.allocator, "/Create /F /TN \"{s}\" /TR \\\"{s}\\\" /SC ONLOGON /RL HIGHEST", .{ elevation_task_name, exe_u8 }) catch return;
+        defer self.allocator.free(args);
+        if (self.runSchtasks(args)) {
+            logger.info("App", "elevation task registered (silent admin on next login)", .{});
+        } else {
+            logger.warn("App", "failed to register elevation scheduled task", .{});
+        }
+    }
+
+    fn deleteElevationTask(self: *App) void {
+        const args = std.fmt.allocPrint(self.allocator, "/Delete /F /TN \"{s}\"", .{elevation_task_name}) catch return;
+        defer self.allocator.free(args);
+        if (self.runSchtasks(args)) {
+            logger.info("App", "elevation scheduled task removed", .{});
+        } else {
+            logger.warn("App", "failed to remove elevation scheduled task (will retry next start)", .{});
+        }
+    }
+
+    /// Keep registry Run and the ONLOGON elevation task from both existing at
+    /// once — dual registration makes logon spawn two instances that race for
+    /// the mutex and stomp each other's config writes. Elevated autostart goes
+    /// through the silent scheduled task; plain autostart uses the registry.
+    pub fn syncAutostartState(self: *App) void {
+        if (!self.config.enable_autostart) {
+            Autostart.setEnabled(false);
+            // Only an elevated token may remove the HIGHEST run-level task;
+            // unelevated attempts just fail with Access Denied.
+            if (self.isAdmin()) self.deleteElevationTask();
+            return;
+        }
+
+        if (self.config.enable_elevated and self.isAdmin()) {
+            Autostart.setEnabled(false);
+            self.ensureElevationTask();
+        } else {
+            // A stale HIGHEST task (e.g. enable_elevated flipped off by a
+            // hand edit) must go, or task + registry both fire at logon.
+            if (self.isAdmin()) self.deleteElevationTask();
+            Autostart.setEnabled(true);
+        }
+    }
+
     pub fn reloadConfig(self: *App) void {
         logger.info("App", "reloading config from disk", .{});
         const prev_autostart = self.config.enable_autostart;
         self.config = ConfigStore.load(self.allocator);
         if (self.config.enable_autostart != prev_autostart) {
-            Autostart.setEnabled(self.config.enable_autostart);
+            self.syncAutostartState();
+        }
+        // Never auto-relaunch from a passive file edit: our own saves used to
+        // re-enter here through the watcher and fire a second UAC prompt while
+        // the first was still pending. Point at the tray menu instead.
+        if (self.config.enable_elevated != self.isAdmin()) {
+            logger.info("App", "elevation preference differs from current token; apply via tray menu", .{});
         }
         self.updateTrayState(self.hook_engine.paused.load(.acquire));
         self.refreshActiveBorder();
@@ -355,10 +547,13 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 const pause_flags = t.MF_STRING | (if (app.hook_engine.paused.load(.acquire)) t.MF_CHECKED else t.MF_UNCHECKED);
                 const border_flags = t.MF_STRING | (if (app.config.enable_border) t.MF_CHECKED else t.MF_UNCHECKED);
                 const autostart_flags = t.MF_STRING | (if (app.config.enable_autostart) t.MF_CHECKED else t.MF_UNCHECKED);
+                const admin_flags = t.MF_STRING | (if (app.isAdmin()) t.MF_CHECKED else t.MF_UNCHECKED);
+                const admin_label = if (app.isAdmin()) strings.menu_normal else strings.menu_admin;
 
                 _ = t.AppendMenuW(menu, pause_flags, CMD_TOGGLE_PAUSE, strings.menu_pause);
                 _ = t.AppendMenuW(menu, border_flags, CMD_TOGGLE_BORDER, strings.menu_border);
                 _ = t.AppendMenuW(menu, autostart_flags, CMD_TOGGLE_AUTOSTART, strings.menu_autostart);
+                _ = t.AppendMenuW(menu, admin_flags, CMD_TOGGLE_ADMIN, admin_label);
                 _ = t.AppendMenuW(menu, t.MF_SEPARATOR, 0, null);
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_RELOAD_CONFIG, strings.menu_reload);
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_OPEN_CONFIG_DIR, strings.menu_open_config);
@@ -386,13 +581,25 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 },
                 CMD_TOGGLE_AUTOSTART => {
                     app.config.enable_autostart = !app.config.enable_autostart;
-                    Autostart.setEnabled(app.config.enable_autostart);
+                    app.syncAutostartState();
                     app.saveConfig();
                 },
                 CMD_RELOAD_CONFIG => app.reloadConfig(),
                 CMD_OPEN_CONFIG_DIR => openDirInExplorer(app, .config),
                 CMD_OPEN_LOG_DIR => openDirInExplorer(app, .log),
                 CMD_RESTART => app.restart(),
+                CMD_TOGGLE_ADMIN => {
+                    const want_elevated = !app.isAdmin();
+                    app.config.enable_elevated = want_elevated;
+
+                    // Downgrading must remove the HIGHEST task while this
+                    // process still holds the admin token it was created with.
+                    if (!want_elevated and app.isAdmin()) app.deleteElevationTask();
+
+                    app.syncAutostartState();
+                    app.saveConfig();
+                    if (want_elevated) _ = app.relaunchAsAdmin() else _ = app.relaunchUnelevated();
+                },
                 CMD_EXIT => _ = t.PostQuitMessage(0),
                 else => {
                     logger.warn("Tray", "unhandled command id={d}", .{wParam & 0xFFFF});

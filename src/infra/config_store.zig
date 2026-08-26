@@ -12,8 +12,15 @@ pub const ConfigStore = struct {
         const cfg_file_path = std.fmt.allocPrint(allocator, "{s}\\config.json", .{cfg_dir}) catch return .{};
         defer allocator.free(cfg_file_path);
 
-        const json_bytes = Paths.readSmallFile(allocator, cfg_file_path, 64 * 1024) catch {
-            Paths.writeFile(cfg_file_path, Config.default_json) catch {};
+        const json_bytes = Paths.readSmallFile(allocator, cfg_file_path, 64 * 1024) catch |err| {
+            // Only seed defaults when the file genuinely does not exist yet.
+            // A sharing conflict (old process still flushing during relaunch)
+            // or any other read failure must NEVER overwrite the user's file.
+            if (err == error.FileNotFound) {
+                Paths.writeFile(cfg_file_path, Config.default_json) catch {};
+            } else {
+                logger.warn("Config", "read config failed err={s}, using defaults in memory only", .{@errorName(err)});
+            }
             return .{};
         };
         defer allocator.free(json_bytes);

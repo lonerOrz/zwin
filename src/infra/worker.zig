@@ -88,6 +88,8 @@ pub const WindowWorker = struct {
     }
 
     fn workerLoop(self: *WindowWorker) void {
+        // Keep geometry application responsive under full CPU load.
+        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
         while (true) {
             t.AcquireSRWLockExclusive(&self.lock);
             while (self.fifo_len == 0 and self.streaming_slot == null and self.running) {

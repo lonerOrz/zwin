@@ -4,7 +4,7 @@ const t = @import("platform/win32.zig");
 const App = @import("app.zig").App;
 
 pub fn main() !void {
-    const mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("zwin_SingleInstance_Mutex");
+    const mutex_name = @import("app.zig").single_instance_mutex_name;
     const mutex = t.CreateMutexW(null, 1, mutex_name);
     if (t.GetLastError() == t.ERROR_ALREADY_EXISTS) {
         if (mutex) |m| _ = t.CloseHandle(m);
