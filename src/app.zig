@@ -180,7 +180,9 @@ pub const App = struct {
                 Window.init(target.hwnd).minimize();
             },
             .adjust_opacity_at => |op| {
-                const target = self.resolveTargetAtPoint(op.pt) orelse return;
+                // Wheel over window edges/DComp surfaces can miss; fall back
+                // to the active top-level so the gesture never dead-ends.
+                const target = self.resolveTargetAtPoint(op.pt) orelse self.resolveActiveTarget() orelse return;
                 Window.init(target.hwnd).adjustOpacity(op.delta);
             },
         }

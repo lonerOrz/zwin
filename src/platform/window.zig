@@ -109,22 +109,45 @@ pub const Window = struct {
     }
 
     pub fn adjustOpacity(self: Window, delta: i32) void {
-        var ex_style = t.GetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE);
+        const ex_style = t.GetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE);
         var current_alpha: u8 = 255;
+        var flags: u32 = 0;
 
         if ((ex_style & t.WS_EX_LAYERED) != 0) {
-            if (t.GetLayeredWindowAttributes(self.hwnd, null, &current_alpha, null) == 0) current_alpha = 255;
-        } else {
-            ex_style |= t.WS_EX_LAYERED;
-            _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, ex_style);
+            if (t.GetLayeredWindowAttributes(self.hwnd, null, &current_alpha, &flags) == 0 or (flags & t.LWA_ALPHA) == 0) {
+                current_alpha = 255;
+            }
         }
 
         const new_alpha: u8 = @intCast(std.math.clamp(@as(i32, current_alpha) + delta, 30, 255));
 
         if (new_alpha >= 255) {
-            _ = t.SetLayeredWindowAttributes(self.hwnd, 0, 255, t.LWA_ALPHA);
-            _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, ex_style & ~t.WS_EX_LAYERED);
+            if ((ex_style & t.WS_EX_LAYERED) != 0) {
+                _ = t.SetLayeredWindowAttributes(self.hwnd, 0, 255, t.LWA_ALPHA);
+                _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, ex_style & ~t.WS_EX_LAYERED);
+                _ = t.SetWindowPos(
+                    self.hwnd,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0,
+                    t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_FRAMECHANGED,
+                );
+            }
         } else {
+            if ((ex_style & t.WS_EX_LAYERED) == 0) {
+                _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, ex_style | t.WS_EX_LAYERED);
+                _ = t.SetWindowPos(
+                    self.hwnd,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0,
+                    t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_FRAMECHANGED,
+                );
+            }
             _ = t.SetLayeredWindowAttributes(self.hwnd, 0, new_alpha, t.LWA_ALPHA);
         }
     }

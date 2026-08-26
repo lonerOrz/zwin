@@ -326,6 +326,7 @@ pub const SWP_NOSIZE: u32 = 0x0001;
 pub const SWP_NOMOVE: u32 = 0x0002;
 pub const SWP_NOZORDER: u32 = 0x0004;
 pub const SWP_NOACTIVATE: u32 = 0x0010;
+pub const SWP_FRAMECHANGED: u32 = 0x0020;
 pub const SWP_NOCOPYBITS: u32 = 0x0100;
 pub const SWP_NOOWNERZORDER: u32 = 0x0200;
 pub const SW_MINIMIZE: i32 = 6;
