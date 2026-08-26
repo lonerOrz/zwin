@@ -351,6 +351,8 @@ pub const OBJID_WINDOW: i32 = 0;
 
 // Process, monitor and security constants
 pub const MONITOR_DEFAULTTONEAREST: u32 = 2;
+pub const SM_CXDRAG: i32 = 68;
+pub const ZWIN_INJECTED_TAG: usize = 0x5A57494E;
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub const HIGH_PRIORITY_CLASS: u32 = 0x00000080;
 pub const THREAD_PRIORITY_HIGHEST: i32 = 2;
@@ -464,6 +466,8 @@ pub extern "user32" fn GetLayeredWindowAttributes(hwnd: HWND, pcrKey: ?*u32, pbA
 pub extern "user32" fn GetCursorPos(lpPoint: *POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetAsyncKeyState(vKey: i32) callconv(.winapi) i16;
 pub extern "user32" fn SendInput(cInputs: u32, pInputs: [*]const INPUT, cbSize: i32) callconv(.winapi) u32;
+
+pub extern "user32" fn GetSystemMetrics(nIndex: i32) callconv(.winapi) i32;
 
 pub extern "user32" fn MonitorFromWindow(hwnd: HWND, dwFlags: u32) callconv(.winapi) ?HMONITOR;
 pub extern "user32" fn GetMonitorInfoW(hMonitor: ?HMONITOR, lpmi: *MONITORINFO) callconv(.winapi) BOOL;

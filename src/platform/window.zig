@@ -33,9 +33,13 @@ pub const Window = struct {
         return false;
     }
 
-    // Filter out child windows, unlisted tool windows, and shell system classes
+    // Filter out child windows, unlisted tool windows, 0-size ghost windows, and shell system classes
     fn isManageableTopLevel(hwnd: t.HWND) bool {
         if (@intFromPtr(hwnd) == 0) return false;
+
+        var rc: t.RECT = undefined;
+        if (t.GetWindowRect(hwnd, &rc) == 0) return false;
+        if ((rc.right - rc.left) <= 0 or (rc.bottom - rc.top) <= 0) return false;
 
         const style = t.GetWindowLongPtrW(hwnd, t.GWL_STYLE);
         if ((style & t.WS_CHILD) != 0) return false;

@@ -16,6 +16,15 @@ pub const AltProtocolState = enum {
 
 const intent_cap = 8;
 
+pub const MouseButton = enum { left, right };
+
+const PendingAction = struct {
+    kind: enum { drag, resize },
+    pt: geom.Point,
+    win: Window,
+    button: MouseButton,
+};
+
 // Low-level hook driver and Alt input-protocol state machine
 pub const InputEngine = struct {
     kb_hook: ?t.HHOOK = null,
@@ -26,6 +35,7 @@ pub const InputEngine = struct {
 
     alt_state: AltProtocolState = .idle,
     middle_pending: bool = false,
+    pending_action: ?PendingAction = null,
 
     notify_hwnd: t.HWND = undefined,
     hinst: ?t.HINSTANCE = null,
@@ -38,12 +48,18 @@ pub const InputEngine = struct {
     intent_head: usize = 0,
     intent_len: usize = 0,
 
+    drag_threshold: i32 = 4,
+
     pub var global: ?*InputEngine = null;
 
     pub fn init(gesture: *GestureStateMachine, config: *const Config) InputEngine {
+        var drag_th = t.GetSystemMetrics(t.SM_CXDRAG);
+        if (drag_th <= 0) drag_th = 4;
+
         return .{
             .gesture = gesture,
             .config = config,
+            .drag_threshold = drag_th,
         };
     }
 
@@ -82,13 +98,31 @@ pub const InputEngine = struct {
         return self.alt_state != .idle or (@as(u16, @bitCast(t.GetAsyncKeyState(t.VK_MENU_I32))) & 0x8000) != 0;
     }
 
-    // Send dummy Ctrl keypress to prevent Windows from activating the menu bar on Alt release
+    // Send dummy Ctrl keypress with ZWIN tag to prevent Windows menu activation on Alt release
     fn neutralizeMenuState() void {
         const KEYEVENTF_KEYUP: u16 = 0x0002;
         const INPUT_KEYBOARD: u32 = 1;
         const inputs = [_]t.INPUT{
-            .{ .type = INPUT_KEYBOARD, .unnamed = .{ .ki = .{ .wVk = t.VK_CONTROL, .wScan = 0, .dwFlags = 0, .time = 0, .dwExtraInfo = 0 } } },
-            .{ .type = INPUT_KEYBOARD, .unnamed = .{ .ki = .{ .wVk = t.VK_CONTROL, .wScan = 0, .dwFlags = KEYEVENTF_KEYUP, .time = 0, .dwExtraInfo = 0 } } },
+            .{ .type = INPUT_KEYBOARD, .unnamed = .{ .ki = .{ .wVk = t.VK_CONTROL, .wScan = 0, .dwFlags = 0, .time = 0, .dwExtraInfo = t.ZWIN_INJECTED_TAG } } },
+            .{ .type = INPUT_KEYBOARD, .unnamed = .{ .ki = .{ .wVk = t.VK_CONTROL, .wScan = 0, .dwFlags = KEYEVENTF_KEYUP, .time = 0, .dwExtraInfo = t.ZWIN_INJECTED_TAG } } },
+        };
+        _ = t.SendInput(2, &inputs, @sizeOf(t.INPUT));
+    }
+
+    // Forward the original mouse click through SendInput so the target app sees it
+    pub fn forwardOriginalClick(button: MouseButton) void {
+        const INPUT_MOUSE: u32 = 0;
+        const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+        const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+        const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
+        const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
+
+        const down_flag = if (button == .left) MOUSEEVENTF_LEFTDOWN else MOUSEEVENTF_RIGHTDOWN;
+        const up_flag = if (button == .left) MOUSEEVENTF_LEFTUP else MOUSEEVENTF_RIGHTUP;
+
+        const inputs = [_]t.INPUT{
+            .{ .type = INPUT_MOUSE, .unnamed = .{ .mi = .{ .dx = 0, .dy = 0, .mouseData = 0, .dwFlags = down_flag, .time = 0, .dwExtraInfo = t.ZWIN_INJECTED_TAG } } },
+            .{ .type = INPUT_MOUSE, .unnamed = .{ .mi = .{ .dx = 0, .dy = 0, .mouseData = 0, .dwFlags = up_flag, .time = 0, .dwExtraInfo = t.ZWIN_INJECTED_TAG } } },
         };
         _ = t.SendInput(2, &inputs, @sizeOf(t.INPUT));
     }
@@ -126,6 +160,11 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
     if (self.paused.load(.acquire)) return t.CallNextHookEx(null, nCode, wParam, lParam);
 
     const kbd: *const t.KBDLLHOOKSTRUCT = @ptrFromInt(@as(usize, @bitCast(lParam)));
+
+    if (kbd.dwExtraInfo == t.ZWIN_INJECTED_TAG) {
+        return t.CallNextHookEx(null, nCode, wParam, lParam);
+    }
+
     const is_down = (wParam == t.WM_KEYDOWN or wParam == t.WM_SYSKEYDOWN);
     const is_up = (wParam == t.WM_KEYUP or wParam == t.WM_SYSKEYUP);
 
@@ -142,7 +181,8 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
     }
 
     // Abort active gesture on ESC
-    if (is_down and kbd.vkCode == t.VK_ESCAPE and self.gesture.isBusy()) {
+    if (is_down and kbd.vkCode == t.VK_ESCAPE and (self.gesture.isBusy() or self.pending_action != null)) {
+        self.pending_action = null;
         self.enqueueIntent(.abort_gesture);
         return 1;
     }
@@ -172,6 +212,10 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     const mouse: *const t.MSLLHOOKSTRUCT = @ptrFromInt(@as(usize, @bitCast(lParam)));
     const pt: geom.Point = .{ .x = mouse.pt.x, .y = mouse.pt.y };
 
+    if (mouse.dwExtraInfo == t.ZWIN_INJECTED_TAG) {
+        return t.CallNextHookEx(null, nCode, wParam, lParam);
+    }
+
     if (wParam == t.WM_MOUSEMOVE) {
         self.last_hook_mouse_ms.store(t.GetTickCount64(), .release);
     }
@@ -179,33 +223,24 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     if (self.isAltDown() and !self.paused.load(.acquire)) {
         switch (wParam) {
             t.WM_LBUTTONDOWN => {
-                // Start drag synchronously with button down to avoid mouse-up race conditions
                 if (actionableWindowAt(mouse.pt)) |win| {
-                    win.ensureRestored();
-                    _ = t.SetForegroundWindow(win.hwnd);
-                    const target = WindowTarget{
-                        .hwnd = win.hwnd,
-                        .session_id = self.gesture.worker.invalidateSession(),
+                    self.pending_action = .{
+                        .kind = .drag,
+                        .pt = pt,
+                        .win = win,
+                        .button = .left,
                     };
-                    self.alt_state = .alt_held_consumed;
-                    self.gesture.startDrag(target, pt, win.getPhysicalBounds(), win.getShadowPadding());
                     return 1;
                 }
             },
             t.WM_RBUTTONDOWN => {
-                // Start resize synchronously with button down
                 if (actionableWindowAt(mouse.pt)) |win| {
-                    win.ensureRestored();
-                    _ = t.SetForegroundWindow(win.hwnd);
-                    const target = WindowTarget{
-                        .hwnd = win.hwnd,
-                        .session_id = self.gesture.worker.invalidateSession(),
+                    self.pending_action = .{
+                        .kind = .resize,
+                        .pt = pt,
+                        .win = win,
+                        .button = .right,
                     };
-                    const bounds = win.getPhysicalBounds();
-                    const pad = win.getShadowPadding();
-                    const sector = geom.calculateSector(bounds.width(), bounds.height(), pt.x - bounds.left, pt.y - bounds.top);
-                    self.alt_state = .alt_held_consumed;
-                    self.gesture.startResize(target, pt, bounds, sector, pad);
                     return 1;
                 }
             },
@@ -229,13 +264,51 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
         }
     }
 
-    if (wParam == t.WM_MOUSEMOVE and self.gesture.isBusy()) {
-        self.gesture.updateMouseMove(pt);
+    if (wParam == t.WM_MOUSEMOVE) {
+        if (self.pending_action) |pa| {
+            const dx = @abs(pt.x - pa.pt.x);
+            const dy = @abs(pt.y - pa.pt.y);
+            if (dx >= self.drag_threshold or dy >= self.drag_threshold) {
+                if (t.IsWindow(pa.win.hwnd) == 0) {
+                    self.pending_action = null;
+                    return t.CallNextHookEx(null, nCode, wParam, lParam);
+                }
+                pa.win.ensureRestored();
+                _ = t.SetForegroundWindow(pa.win.hwnd);
+                const target = WindowTarget{
+                    .hwnd = pa.win.hwnd,
+                    .session_id = self.gesture.worker.invalidateSession(),
+                };
+                self.alt_state = .alt_held_consumed;
+
+                if (pa.kind == .drag) {
+                    self.gesture.startDrag(target, pa.pt, pa.win.getPhysicalBounds(), pa.win.getShadowPadding());
+                } else {
+                    const bounds = pa.win.getPhysicalBounds();
+                    const pad = pa.win.getShadowPadding();
+                    const sector = geom.calculateSector(bounds.width(), bounds.height(), pa.pt.x - bounds.left, pa.pt.y - bounds.top);
+                    self.gesture.startResize(target, pa.pt, bounds, sector, pad);
+                }
+                self.pending_action = null;
+            }
+        }
+
+        if (self.gesture.isBusy()) {
+            self.gesture.updateMouseMove(pt);
+        }
     }
 
-    if ((wParam == t.WM_LBUTTONUP or wParam == t.WM_RBUTTONUP) and self.gesture.isBusy()) {
-        self.gesture.finish();
-        return 1;
+    if (wParam == t.WM_LBUTTONUP or wParam == t.WM_RBUTTONUP) {
+        if (self.pending_action) |pa| {
+            self.pending_action = null;
+            InputEngine.forwardOriginalClick(pa.button);
+            return 1;
+        }
+
+        if (self.gesture.isBusy()) {
+            self.gesture.finish();
+            return 1;
+        }
     }
 
     if (wParam == t.WM_MBUTTONUP and self.middle_pending) {
