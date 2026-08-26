@@ -3,6 +3,9 @@ const geom = @import("../calc/geometry.zig");
 const WindowTarget = @import("../domain/window_target.zig").WindowTarget;
 const WindowWorker = @import("../infra/worker.zig").WindowWorker;
 const Config = @import("../domain/config.zig").Config;
+const Window = @import("../platform/window.zig").Window;
+
+const snap_threshold: i32 = 20;
 
 pub const GestureState = union(enum) {
     idle,
@@ -10,6 +13,8 @@ pub const GestureState = union(enum) {
         target: WindowTarget,
         start_pt: geom.Point,
         start_bounds: geom.Rect,
+        shadow_pad: geom.Padding,
+        work_area: ?geom.Rect,
         dpi: u32,
     },
     resizing: struct {
@@ -18,6 +23,7 @@ pub const GestureState = union(enum) {
         start_bounds: geom.Rect,
         sector: geom.Sector,
         shadow_pad: geom.Padding,
+        work_area: ?geom.Rect,
     },
 };
 
@@ -34,11 +40,20 @@ pub const GestureStateMachine = struct {
         return .{ .worker = worker, .config = config };
     }
 
-    pub fn startDrag(self: *GestureStateMachine, target: WindowTarget, cursor: geom.Point, bounds: geom.Rect) void {
+    pub fn startDrag(
+        self: *GestureStateMachine,
+        target: WindowTarget,
+        cursor: geom.Point,
+        bounds: geom.Rect,
+        pad: geom.Padding,
+    ) void {
+        const win = Window.init(target.hwnd);
         self.state = .{ .dragging = .{
             .target = target,
             .start_pt = cursor,
             .start_bounds = bounds,
+            .shadow_pad = pad,
+            .work_area = win.getMonitorWorkArea(),
             .dpi = t.GetDpiForWindow(target.hwnd),
         } };
     }
@@ -51,12 +66,14 @@ pub const GestureStateMachine = struct {
         sector: geom.Sector,
         pad: geom.Padding,
     ) void {
+        const win = Window.init(target.hwnd);
         self.state = .{ .resizing = .{
             .target = target,
             .start_pt = cursor,
             .start_bounds = bounds,
             .sector = sector,
             .shadow_pad = pad,
+            .work_area = win.getMonitorWorkArea(),
         } };
     }
 
@@ -69,17 +86,28 @@ pub const GestureStateMachine = struct {
                 if (dpi != 0 and dpi != a.dpi) {
                     var rc: t.RECT = undefined;
                     if (t.GetWindowRect(a.target.hwnd, &rc) == 0) return;
-                    a = .{
-                        .target = a.target,
-                        .start_pt = current_pt,
-                        .start_bounds = rectFromWin32(rc),
-                        .dpi = dpi,
-                    };
+                    a.start_pt = current_pt;
+                    a.start_bounds = rectFromWin32(rc);
+                    a.dpi = dpi;
+                    a.work_area = Window.init(a.target.hwnd).getMonitorWorkArea();
                     self.state = .{ .dragging = a };
                 }
+
+                var physical_bounds = geom.Rect{
+                    .left = a.start_bounds.left + (current_pt.x - a.start_pt.x),
+                    .top = a.start_bounds.top + (current_pt.y - a.start_pt.y),
+                    .right = a.start_bounds.right + (current_pt.x - a.start_pt.x),
+                    .bottom = a.start_bounds.bottom + (current_pt.y - a.start_pt.y),
+                };
+
+                if (a.work_area) |wa| {
+                    physical_bounds = geom.snapMoveBounds(physical_bounds, wa, snap_threshold);
+                }
+
+                const pad = a.shadow_pad;
                 self.worker.postStreaming(a.target, .{ .move = .{
-                    .x = a.start_bounds.left + (current_pt.x - a.start_pt.x),
-                    .y = a.start_bounds.top + (current_pt.y - a.start_pt.y),
+                    .x = physical_bounds.left - pad.l,
+                    .y = physical_bounds.top - pad.t,
                 } });
             },
             .resizing => |r| {
@@ -87,13 +115,18 @@ pub const GestureStateMachine = struct {
                     .x = current_pt.x - r.start_pt.x,
                     .y = current_pt.y - r.start_pt.y,
                 };
-                const rc = geom.calculateResizedRect(
+                var rc = geom.calculateResizedRect(
                     r.start_bounds,
                     delta,
                     r.sector,
                     self.config.min_window_width,
                     self.config.min_window_height,
                 );
+
+                if (r.work_area) |wa| {
+                    rc = geom.snapResizeBounds(rc, wa, r.sector, snap_threshold);
+                }
+
                 const pad = r.shadow_pad;
                 self.worker.postStreaming(r.target, .{ .resize = .{
                     .x = rc.left - pad.l,

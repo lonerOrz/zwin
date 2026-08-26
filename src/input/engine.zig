@@ -176,7 +176,7 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
                         .session_id = self.gesture.worker.invalidateSession(),
                     };
                     self.alt_state = .alt_held_consumed;
-                    self.gesture.startDrag(target, pt, win.getPhysicalBounds());
+                    self.gesture.startDrag(target, pt, win.getPhysicalBounds(), win.getShadowPadding());
                     return 1;
                 }
             },
