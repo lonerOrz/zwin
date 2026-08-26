@@ -42,6 +42,8 @@ pub const App = struct {
     nid: t.NOTIFYICONDATAW = undefined,
     last_config_write_ms: u64 = 0,
     current_session_id: u64 = 0,
+    hicon_enabled: ?t.HICON = null,
+    hicon_disabled: ?t.HICON = null,
 
     fg_hook: ?t.HWINEVENTHOOK = null,
     obj_hook: ?t.HWINEVENTHOOK = null,
@@ -150,7 +152,7 @@ pub const App = struct {
         if (self.config.enable_autostart != prev_autostart) {
             Autostart.setEnabled(self.config.enable_autostart);
         }
-        self.updateTrayTip(self.hook_engine.paused.load(.acquire));
+        self.updateTrayState(self.hook_engine.paused.load(.acquire));
         self.refreshActiveBorder();
     }
 
@@ -161,7 +163,7 @@ pub const App = struct {
 
     pub fn setPaused(self: *App, paused: bool) void {
         self.hook_engine.paused.store(paused, .release);
-        self.updateTrayTip(paused);
+        self.updateTrayState(paused);
     }
 
     pub fn scheduleBorderReinforce(self: *App) void {
@@ -276,12 +278,15 @@ pub const App = struct {
 
     fn initTrayIcon(self: *App, hinst: ?t.HINSTANCE) void {
         const hwnd = self.main_hwnd orelse return;
+        self.hicon_enabled = t.LoadIconW(hinst, intResource(3)) orelse t.LoadIconW(null, intResource(32512));
+        self.hicon_disabled = t.LoadIconW(hinst, intResource(2)) orelse t.LoadIconW(null, intResource(32515));
+        const is_paused = self.hook_engine.paused.load(.acquire);
         self.nid = .{
             .hWnd = hwnd,
             .uID = 1,
             .uFlags = t.NIF_MESSAGE | t.NIF_ICON | t.NIF_TIP,
             .uCallbackMessage = t.WM_TRAY,
-            .hIcon = t.LoadIconW(hinst, intResource(1)) orelse t.LoadIconW(null, intResource(32512)),
+            .hIcon = if (is_paused) self.hicon_disabled else self.hicon_enabled,
         };
         const ok = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
         if (ok == 0) {
@@ -289,10 +294,10 @@ pub const App = struct {
         } else {
             logger.info("App", "tray icon added", .{});
         }
-        self.updateTrayTip(self.hook_engine.paused.load(.acquire));
+        self.updateTrayState(is_paused);
     }
 
-    pub fn updateTrayTip(self: *App, is_paused: bool) void {
+    pub fn updateTrayState(self: *App, is_paused: bool) void {
         const strings = I18n.getStrings(self.config.language);
         const tip = if (is_paused) strings.tray_paused else strings.tray_running;
 
@@ -300,6 +305,9 @@ pub const App = struct {
         while (len < self.nid.szTip.len - 1 and tip[len] != 0) : (len += 1) {}
         @memcpy(self.nid.szTip[0..len], tip[0..len]);
         self.nid.szTip[len] = 0;
+
+        self.nid.hIcon = if (is_paused) self.hicon_disabled else self.hicon_enabled;
+        self.nid.uFlags = t.NIF_ICON | t.NIF_TIP;
         if (t.Shell_NotifyIconW(t.NIM_MODIFY, &self.nid) == 0) {
             logger.warn("App", "Shell_NotifyIconW(NIM_MODIFY) failed gle={d}", .{t.GetLastError()});
         }
