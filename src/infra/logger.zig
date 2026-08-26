@@ -44,7 +44,7 @@ pub const Logger = struct {
 
     fn rotateFile(self: *Logger) void {
         const pa = std.heap.page_allocator;
-        const dir = Paths.getXdgLogDir(pa) catch return;
+        const dir = Paths.getLogDir(pa) catch return;
         defer pa.free(dir);
 
         Paths.makeDirs(dir);

@@ -14,7 +14,6 @@ pub const Config = struct {
     opacity_step: u8 = 15,
 
     active_border_color: u32 = 0x000088FF,
-    border_reset_color: u32 = 0xFFFFFFFF,
 
     min_window_width: i32 = 120,
     min_window_height: i32 = 100,
@@ -122,10 +121,10 @@ pub const Config = struct {
         if (v.enable_border) |eb| result.enable_border = eb;
         if (v.enable_wheel_opacity) |wo| result.enable_wheel_opacity = wo;
         if (v.enable_autostart) |ea| result.enable_autostart = ea;
-        if (v.opacity_step) |os| result.opacity_step = os;
-        if (v.min_window_width) |mw| result.min_window_width = mw;
-        if (v.min_window_height) |mh| result.min_window_height = mh;
-        if (v.log_max_days) |ld| result.log_max_days = ld;
+        if (v.opacity_step) |os| result.opacity_step = std.math.clamp(os, 1, 100);
+        if (v.min_window_width) |mw| result.min_window_width = @max(mw, 50);
+        if (v.min_window_height) |mh| result.min_window_height = @max(mh, 50);
+        if (v.log_max_days) |ld| result.log_max_days = @max(ld, 1);
 
         if (v.key_center) |kc| if (kc.len > 0 and std.ascii.isAlphanumeric(kc[0])) {
             result.key_center = std.ascii.toUpper(kc[0]);
@@ -157,6 +156,18 @@ test "loadFromJson overrides defaults" {
     try std.testing.expectEqual(@as(u32, 0x0000FF00), c.active_border_color);
     try std.testing.expectEqual(@as(u8, 40), c.opacity_step);
     try std.testing.expectEqual(Config{}, Config.loadFromJson(std.testing.allocator, "not json"));
+}
+
+test "loadFromJson clamps out-of-range numeric settings" {
+    const allocator = std.testing.allocator;
+    const c = Config.loadFromJson(allocator, "{\"min_window_width\":-40,\"min_window_height\":0,\"log_max_days\":0,\"opacity_step\":255}");
+    try std.testing.expectEqual(@as(i32, 50), c.min_window_width);
+    try std.testing.expectEqual(@as(i32, 50), c.min_window_height);
+    try std.testing.expectEqual(@as(u32, 1), c.log_max_days);
+    try std.testing.expectEqual(@as(u8, 100), c.opacity_step);
+
+    const low = Config.loadFromJson(allocator, "{\"opacity_step\":0}");
+    try std.testing.expectEqual(@as(u8, 1), low.opacity_step);
 }
 
 test "serializeToJson roundtrips through loadFromJson" {

@@ -26,7 +26,7 @@ pub const ConfigWatcher = struct {
 
     fn watcherLoop(self: *ConfigWatcher) void {
         const pa = std.heap.page_allocator;
-        const dir = Paths.getXdgConfigDir(pa) catch return;
+        const dir = Paths.getConfigDir(pa) catch return;
         defer pa.free(dir);
 
         const wide_dir = Paths.toWide(pa, dir) catch return;

@@ -5,7 +5,7 @@ A minimalist, ultra-lightweight window manipulation extension for Windows writte
 ## Features
 
 - X11-style `Alt` + mouse window moving / resizing / minimizing
-- DWM-accelerated border highlight for the active window
+- DWM-accelerated border highlight for the active window (requires Windows 11)
 - Hotkeys: center, always-on-top toggle, close
 - Config file with automatic hot-reload (no restart needed)
 - Tray icon with context menu (pause, toggles, open config/log folders)

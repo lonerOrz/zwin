@@ -3,6 +3,8 @@ const Config = @import("../domain/config.zig").Config;
 const Window = @import("../platform/window.zig").Window;
 const logger = @import("../infra/logger.zig");
 
+const DWM_COLOR_DEFAULT: u32 = 0xFFFFFFFF;
+
 pub const BorderManager = struct {
     last_active: ?t.HWND = null,
     config: *const Config,
@@ -56,7 +58,7 @@ pub const BorderManager = struct {
     pub fn reset(self: *BorderManager) void {
         if (self.last_active) |prev| {
             if (t.IsWindow(prev) != 0) {
-                _ = t.DwmSetWindowAttribute(prev, t.DWMWA_BORDER_COLOR, &self.config.border_reset_color, @sizeOf(u32));
+                _ = t.DwmSetWindowAttribute(prev, t.DWMWA_BORDER_COLOR, &DWM_COLOR_DEFAULT, @sizeOf(u32));
             }
             self.last_active = null;
         }

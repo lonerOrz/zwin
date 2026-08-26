@@ -5,7 +5,7 @@ const logger = @import("logger.zig");
 
 pub const ConfigStore = struct {
     pub fn load(allocator: std.mem.Allocator) Config {
-        const cfg_dir = Paths.getXdgConfigDir(allocator) catch return .{};
+        const cfg_dir = Paths.getConfigDir(allocator) catch return .{};
         defer allocator.free(cfg_dir);
         Paths.makeDirs(cfg_dir);
 
@@ -22,7 +22,7 @@ pub const ConfigStore = struct {
     }
 
     pub fn save(allocator: std.mem.Allocator, config: *const Config) void {
-        const cfg_dir = Paths.getXdgConfigDir(allocator) catch return;
+        const cfg_dir = Paths.getConfigDir(allocator) catch return;
         defer allocator.free(cfg_dir);
 
         const cfg_file_path = std.fmt.allocPrint(allocator, "{s}\\config.json", .{cfg_dir}) catch return;

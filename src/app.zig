@@ -34,6 +34,7 @@ pub const App = struct {
     watcher: ConfigWatcher = .{},
     main_hwnd: ?t.HWND = null,
     nid: t.NOTIFYICONDATAW = undefined,
+    last_config_write_ms: u64 = 0,
 
     fg_hook: ?t.HWINEVENTHOOK = null,
     obj_hook: ?t.HWINEVENTHOOK = null,
@@ -118,6 +119,7 @@ pub const App = struct {
 
     pub fn saveConfig(self: *App) void {
         ConfigStore.save(self.allocator, &self.config);
+        self.last_config_write_ms = t.GetTickCount64();
     }
 
     pub fn setPaused(self: *App, paused: bool) void {
@@ -295,7 +297,12 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
         },
         t.WM_APP_EVENT => {
             const event: u32 = @intCast(wParam);
-            if (event == ConfigWatcher.CONFIG_CHANGED_EVENT) app.reloadConfig();
+            // Skip the echo of our own saveConfig write; manual edits still reload.
+            if (event == ConfigWatcher.CONFIG_CHANGED_EVENT and
+                t.GetTickCount64() - app.last_config_write_ms >= 300)
+            {
+                app.reloadConfig();
+            }
         },
         else => return t.DefWindowProcW(hwnd, msg, wParam, lParam),
     }
@@ -304,9 +311,9 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
 
 fn openDirInExplorer(app: *App, kind: enum { config, log }) void {
     const dir = if (kind == .config)
-        Paths.getXdgConfigDir(app.allocator)
+        Paths.getConfigDir(app.allocator)
     else
-        Paths.getXdgLogDir(app.allocator);
+        Paths.getLogDir(app.allocator);
     if (dir) |d| {
         defer app.allocator.free(d);
         Paths.openFolderInExplorer(d);

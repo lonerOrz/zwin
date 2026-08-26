@@ -3,12 +3,12 @@ const std = @import("std");
 const t = @import("win32.zig");
 
 pub const Paths = struct {
-    pub fn getXdgConfigDir(allocator: std.mem.Allocator) ![]u8 {
-        return envDir(allocator, "APPDATA", "XDG_CONFIG_HOME", "zwin");
+    pub fn getConfigDir(allocator: std.mem.Allocator) ![]u8 {
+        return envDir(allocator, "APPDATA", "zwin");
     }
 
-    pub fn getXdgLogDir(allocator: std.mem.Allocator) ![]u8 {
-        return envDir(allocator, "LOCALAPPDATA", "XDG_STATE_HOME", "zwin\\logs");
+    pub fn getLogDir(allocator: std.mem.Allocator) ![]u8 {
+        return envDir(allocator, "LOCALAPPDATA", "zwin\\logs");
     }
 
     pub fn toWide(allocator: std.mem.Allocator, path_u8: []const u8) ![:0]u16 {
@@ -144,19 +144,12 @@ pub const Paths = struct {
     }
 };
 
-fn envDir(allocator: std.mem.Allocator, comptime primary_var: [:0]const u8, comptime fallback_var: [:0]const u8, comptime sub_path: []const u8) ![]u8 {
+fn envDir(allocator: std.mem.Allocator, comptime env_var: [:0]const u8, comptime sub_path: []const u8) ![]u8 {
     var wide_buf: [1024]u16 = undefined;
-    const n = t.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral(primary_var), &wide_buf, wide_buf.len);
-    const m = if (n > 0 and n <= wide_buf.len)
-        n
-    else
-        t.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral(fallback_var), &wide_buf, wide_buf.len);
-    if (m == 0 or m > wide_buf.len) return error.CannotResolveDir;
+    const n = t.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral(env_var), &wide_buf, wide_buf.len);
+    if (n == 0 or n > wide_buf.len) return error.CannotResolveDir;
 
-    const base = try std.unicode.utf16LeToUtf8Alloc(allocator, wide_buf[0..m]);
-    defer allocator.free(base);
-
-    if (base.len > 0 and base[0] == '/') return error.InvalidWindowsPath;
+    const base = try std.unicode.utf16LeToUtf8Alloc(allocator, wide_buf[0..n]);
 
     return std.fmt.allocPrint(allocator, "{s}\\{s}", .{ base, sub_path });
 }

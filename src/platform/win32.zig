@@ -167,6 +167,7 @@ pub extern "kernel32" fn GetLastError() callconv(.winapi) u32;
 pub extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*:0]const u16) callconv(.winapi) ?HINSTANCE;
 pub extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) u32;
+pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 pub extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.winapi) void;
 pub extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: [*]u16, nSize: u32) callconv(.winapi) u32;
 pub extern "kernel32" fn CreateDirectoryW(lpPathName: [*:0]const u16, lpSecurityAttributes: ?*anyopaque) callconv(.winapi) BOOL;
