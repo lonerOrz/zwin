@@ -49,6 +49,7 @@ pub const App = struct {
     nid: t.NOTIFYICONDATAW = undefined,
     last_config_write_ms: u64 = 0,
     quitting: bool = false,
+    taskbar_created_msg: u32 = 0,
     current_session_id: u64 = 0,
     hicon_enabled: ?t.HICON = null,
     hicon_disabled: ?t.HICON = null,
@@ -97,6 +98,13 @@ pub const App = struct {
         // unelevated run below. start() itself contains no bounce logic.
         self.current_session_id = self.worker.invalidateSession();
         try self.createMessageWindow(hinst);
+        // Explorer broadcasts this registered message when it restarts;
+        // re-add the tray icon on receipt. UIPI drops the broadcast into a
+        // high-IL window, so when elevated, punch it through explicitly.
+        self.taskbar_created_msg = t.RegisterWindowMessageW(std.unicode.utf8ToUtf16LeStringLiteral("TaskbarCreated"));
+        if (self.taskbar_created_msg != 0 and self.isAdmin()) {
+            _ = t.ChangeWindowMessageFilterEx(self.main_hwnd.?, self.taskbar_created_msg, t.MSGFLT_ALLOW, null);
+        }
         try self.worker.start();
         try self.hook_engine.install(hinst, self.main_hwnd.?);
         try self.watcher.start(self.allocator, self.main_hwnd.?);
@@ -546,6 +554,13 @@ fn winEventCallback(_: t.HWINEVENTHOOK, event: u32, hwnd: t.HWND, idObject: i32,
 
 fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winapi) t.LRESULT {
     const app = App.global orelse return t.DefWindowProcW(hwnd, msg, wParam, lParam);
+
+    // Runtime-registered id, so it cannot live in the comptime switch below.
+    if (app.taskbar_created_msg != 0 and msg == app.taskbar_created_msg) {
+        _ = t.Shell_NotifyIconW(t.NIM_ADD, &app.nid);
+        app.updateTrayState(app.hook_engine.paused.load(.acquire));
+        return 0;
+    }
 
     switch (msg) {
         t.WM_TRAY => {
