@@ -598,7 +598,16 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
 
                     app.syncAutostartState();
                     app.saveConfig();
-                    if (want_elevated) _ = app.relaunchAsAdmin() else _ = app.relaunchUnelevated();
+
+                    // Cancelled UAC / failed respawn must not leave
+                    // config.json claiming a token we don't hold.
+                    const launched = if (want_elevated) app.relaunchAsAdmin() else app.relaunchUnelevated();
+                    if (!launched) {
+                        app.config.enable_elevated = !want_elevated;
+                        app.syncAutostartState();
+                        app.saveConfig();
+                        logger.info("App", "elevation preference rolled back to match current token", .{});
+                    }
                 },
                 CMD_EXIT => _ = t.PostQuitMessage(0),
                 else => {
