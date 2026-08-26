@@ -1,47 +1,32 @@
 # zwin
 
-A minimalist, ultra-lightweight window manipulation extension for Windows written in Zig using the native Win32 API. It brings X11-style `Alt`-key window management to Windows with near-zero resource usage.
-
-## Features
-
-- X11-style `Alt` + mouse window moving / resizing / minimizing
-- DWM-accelerated border highlight for the active window (requires Windows 11)
-- Hotkeys: center, always-on-top toggle, close
-- Config file with automatic hot-reload (no restart needed)
-- Tray icon with context menu (pause, toggles, open config/log folders)
-- Optional registry-based autostart (`HKCU\...\Run`)
-- Auto / English / Simplified Chinese UI strings
-- Single-instance guard, per-monitor-DPI aware, daily-rotated logs
+A lightweight Windows utility to move and resize windows from anywhere by holding `Alt`. Written in Zig using the native Win32 API.
 
 ## Keybindings
 
-| Shortcut / Action            | Description                                    |
-| :--------------------------- | :--------------------------------------------- |
-| **`Alt` + Left Click Drag**  | Move window from anywhere within its bounds    |
-| **`Alt` + Right Click Drag** | Resize window based on the clicked 3x3 sector  |
-| **`Alt` + Middle Click**     | Minimize window                                |
-| **`Alt` + Mouse Wheel**      | Adjust window opacity                          |
-| **`Alt + C`**                | Center window in the current monitor work area |
-| **`Alt + T`**                | Toggle window topmost state (Always on Top)    |
-| **`Alt + Q`**                | Close window                                   |
+| Shortcut                             | Action                                      |
+| :----------------------------------- | :------------------------------------------ |
+| **`Alt` + Left Click Drag**          | Move window                                 |
+| **`Alt` + Right Click Drag**         | Resize window (from 9 screen sectors)       |
+| **`Alt` + Middle Click**             | Minimize window                             |
+| **`Alt` + Mouse Wheel**              | Change window opacity                       |
+| **`Alt` + Click** _(without moving)_ | Normal click passed to the underlying app   |
+| **`Alt + C`**                        | Center window on current monitor            |
+| **`Alt + T`**                        | Toggle always-on-top                        |
+| **`Alt + Q`**                        | Close window                                |
+| **`ESC`** _(while dragging)_         | Cancel movement and restore window position |
 
-## Installation
+## Download & Usage
 
-1. Download the portable zip from [GitHub Releases](../../releases).
-2. Extract and run `zwin.exe`.
-3. Enable _Autostart_ from the tray menu to launch it on login.
+1. Download the latest portable zip from [Releases](../../releases).
+2. Extract and run `zwin.exe`. It runs in the system tray.
 
-## Usage
-
-zwin runs silently in the system tray.
-
-- **Double-click** the tray icon to pause/resume all hooks.
-- **Right-click** the tray icon for the menu: pause, border/autostart toggles, config reload, open config/log folders, exit.
-- Editing `%APPDATA%\zwin\config.json` triggers an automatic reload.
+- **Double-click tray icon**: Pause / resume.
+- **Right-click tray icon**: Toggle autostart, run as administrator, reload config, or open logs.
 
 ## Configuration
 
-Configuration file is located at `%APPDATA%\zwin\config.json`:
+Settings are saved in `%APPDATA%\zwin\config.json`. The file is automatically reloaded when saved:
 
 ```json
 {
@@ -52,6 +37,7 @@ Configuration file is located at `%APPDATA%\zwin\config.json`:
   "enable_border": true,
   "enable_wheel_opacity": true,
   "enable_autostart": false,
+  "enable_elevated": false,
   "opacity_step": 15,
   "active_border_hex": "#FF8800",
   "min_window_width": 120,
@@ -60,24 +46,23 @@ Configuration file is located at `%APPDATA%\zwin\config.json`:
 }
 ```
 
-Logs are written daily to `%LOCALAPPDATA%\zwin\logs\` and retained for `log_max_days`.
+- **`enable_elevated`**: Allows managing elevated windows like Task Manager. Toggling from the tray menu restarts immediately; editing the JSON applies on next start. When enabled together with `enable_autostart`, a Windows scheduled task is used for silent startup.
+- **`enable_border`**: Draws an accent border on the active window (Windows 11 only).
 
-## Build
+Logs are stored in `%LOCALAPPDATA%\zwin\logs\`.
 
-Requirements: [Zig](https://ziglang.org/download/) 0.16
+## Building from Source
+
+Requires [Zig](https://ziglang.org/download/) 0.16.
 
 ```sh
+# Build release binary (output at zig-out/bin/zwin.exe)
 zig build -Doptimize=ReleaseFast -Dstrip=true
-```
 
-Output executable: `zig-out/bin/zwin.exe`
-
-Run tests:
-
-```sh
+# Run tests
 zig build test -Dtarget=x86_64-windows-gnu
 ```
 
 ## License
 
-GNU General Public License v3.0 (GPL-3.0)
+GPL-3.0
