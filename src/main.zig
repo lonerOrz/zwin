@@ -2,32 +2,52 @@ const std = @import("std");
 const builtin = @import("builtin");
 const t = @import("platform/win32.zig");
 const App = @import("app.zig").App;
+const single_instance_mutex_name = @import("app.zig").single_instance_mutex_name;
+const ConfigStore = @import("infra/config_store.zig").ConfigStore;
 
 pub fn main() !void {
-    const mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("zwin_SingleInstance_Mutex");
-    const mutex = t.CreateMutexW(null, 1, mutex_name);
-    if (t.GetLastError() == t.ERROR_ALREADY_EXISTS) return;
-    defer {
-        if (mutex) |m| _ = t.CloseHandle(m);
-    }
-
-    var gpa = if (builtin.mode == .Debug)
-        std.heap.DebugAllocator(.{}){}
-    else {};
-    _ = &gpa;
+    var gpa = if (builtin.mode == .Debug) std.heap.DebugAllocator(.{}){} else {};
     defer if (builtin.mode == .Debug) {
         _ = gpa.deinit();
     };
+    const allocator = if (builtin.mode == .Debug) gpa.allocator() else std.heap.smp_allocator;
 
-    const allocator = if (builtin.mode == .Debug)
-        gpa.allocator()
-    else
-        std.heap.smp_allocator;
+    // Enforce single instance before elevation to avoid redundant UAC prompts
+    var mutex = t.CreateMutexW(null, 1, single_instance_mutex_name);
+    if (t.GetLastError() == t.ERROR_ALREADY_EXISTS) {
+        if (mutex) |m| _ = t.CloseHandle(m);
+        return;
+    }
+
+    // Early elevation handoff before initializing subsystems; fall back on cancel
+    if (t.IsUserAnAdmin() == 0) {
+        const cfg = ConfigStore.load(allocator);
+        if (cfg.enable_elevated) {
+            var path_buf: [1024]u16 = undefined;
+            const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+            if (len > 0 and len < path_buf.len) {
+                if (mutex) |m| _ = t.CloseHandle(m);
+                mutex = null;
+
+                const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("runas"), path_buf[0..len :0].ptr, null, null, 1);
+                if (@intFromPtr(res) > 32) return;
+
+                // Reclaim single instance mutex if elevation was canceled or failed
+                mutex = t.CreateMutexW(null, 1, single_instance_mutex_name);
+                if (t.GetLastError() == t.ERROR_ALREADY_EXISTS) {
+                    if (mutex) |m| _ = t.CloseHandle(m);
+                    return;
+                }
+            }
+        }
+    }
 
     const hinst = t.GetModuleHandleW(null);
-
     var app = try App.init(allocator);
     defer app.deinit();
+
+    // Transfer mutex ownership to App for restart and deinit lifecycle management
+    app.single_instance_mutex = mutex;
 
     try app.start(hinst);
 

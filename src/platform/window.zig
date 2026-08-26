@@ -9,6 +9,7 @@ pub const Window = struct {
         return .{ .hwnd = hwnd };
     }
 
+    // Resolve actionable top-level window, filtering tool windows, shell classes, and cloaked windows
     pub fn getTrueTopLevel(hwnd: t.HWND) ?t.HWND {
         var curr = hwnd;
         if (@intFromPtr(curr) == 0) return null;
@@ -19,12 +20,26 @@ pub const Window = struct {
             curr = root;
         }
 
-        if (isManageableTopLevel(curr)) return curr;
+        if (isManageableTopLevel(curr) and !isCloaked(curr)) return curr;
         return null;
     }
 
+    // Check if window is cloaked (e.g. on another virtual desktop or suspended UWP)
+    fn isCloaked(hwnd: t.HWND) bool {
+        var cloaked: u32 = 0;
+        if (t.DwmGetWindowAttribute(hwnd, t.DWMWA_CLOAKED, &cloaked, @sizeOf(u32)) == 0) {
+            return cloaked != 0;
+        }
+        return false;
+    }
+
+    // Filter out child windows, unlisted tool windows, 0-size ghost windows, and shell system classes
     fn isManageableTopLevel(hwnd: t.HWND) bool {
         if (@intFromPtr(hwnd) == 0) return false;
+
+        var rc: t.RECT = undefined;
+        if (t.GetWindowRect(hwnd, &rc) == 0) return false;
+        if ((rc.right - rc.left) <= 0 or (rc.bottom - rc.top) <= 0) return false;
 
         const style = t.GetWindowLongPtrW(hwnd, t.GWL_STYLE);
         if ((style & t.WS_CHILD) != 0) return false;
@@ -55,6 +70,7 @@ pub const Window = struct {
         return true;
     }
 
+    // Check if window covers the entire monitor without a standard caption
     pub fn isExclusiveFullScreen(self: Window) bool {
         if (t.IsZoomed(self.hwnd) != 0) return false;
         const style = t.GetWindowLongPtrW(self.hwnd, t.GWL_STYLE);
@@ -71,6 +87,7 @@ pub const Window = struct {
             bounds.bottom >= mi.rcMonitor.bottom;
     }
 
+    // Query physical frame bounds via DWM, falling back to GetWindowRect
     pub fn getPhysicalBounds(self: Window) geom.Rect {
         var raw_bounds: t.RECT = undefined;
         if (t.DwmGetWindowAttribute(self.hwnd, t.DWMWA_EXTENDED_FRAME_BOUNDS, &raw_bounds, @sizeOf(t.RECT)) == 0) {
@@ -80,6 +97,7 @@ pub const Window = struct {
         return .{ .left = raw_bounds.left, .top = raw_bounds.top, .right = raw_bounds.right, .bottom = raw_bounds.bottom };
     }
 
+    // Calculate drop-shadow padding offsets between whole window and visible frame
     pub fn getShadowPadding(self: Window) geom.Padding {
         var frame: t.RECT = undefined;
         var whole: t.RECT = undefined;
@@ -96,6 +114,7 @@ pub const Window = struct {
         return .{};
     }
 
+    // Query monitor work area excluding taskbar
     pub fn getMonitorWorkArea(self: Window) ?geom.Rect {
         const mon = t.MonitorFromWindow(self.hwnd, t.MONITOR_DEFAULTTONEAREST);
         var mi: t.MONITORINFO = .{ .rcMonitor = undefined, .rcWork = undefined, .dwFlags = 0 };
@@ -108,23 +127,47 @@ pub const Window = struct {
         };
     }
 
+    // Adjust window transparency, toggling WS_EX_LAYERED as needed
     pub fn adjustOpacity(self: Window, delta: i32) void {
-        var ex_style = t.GetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE);
+        const ex_style = t.GetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE);
         var current_alpha: u8 = 255;
+        var flags: u32 = 0;
 
         if ((ex_style & t.WS_EX_LAYERED) != 0) {
-            if (t.GetLayeredWindowAttributes(self.hwnd, null, &current_alpha, null) == 0) current_alpha = 255;
-        } else {
-            ex_style |= t.WS_EX_LAYERED;
-            _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, ex_style);
+            if (t.GetLayeredWindowAttributes(self.hwnd, null, &current_alpha, &flags) == 0 or (flags & t.LWA_ALPHA) == 0) {
+                current_alpha = 255;
+            }
         }
 
         const new_alpha: u8 = @intCast(std.math.clamp(@as(i32, current_alpha) + delta, 30, 255));
 
         if (new_alpha >= 255) {
-            _ = t.SetLayeredWindowAttributes(self.hwnd, 0, 255, t.LWA_ALPHA);
-            _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, ex_style & ~t.WS_EX_LAYERED);
+            if ((ex_style & t.WS_EX_LAYERED) != 0) {
+                _ = t.SetLayeredWindowAttributes(self.hwnd, 0, 255, t.LWA_ALPHA);
+                _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, ex_style & ~t.WS_EX_LAYERED);
+                _ = t.SetWindowPos(
+                    self.hwnd,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0,
+                    t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_FRAMECHANGED,
+                );
+            }
         } else {
+            if ((ex_style & t.WS_EX_LAYERED) == 0) {
+                _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, ex_style | t.WS_EX_LAYERED);
+                _ = t.SetWindowPos(
+                    self.hwnd,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0,
+                    t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_FRAMECHANGED,
+                );
+            }
             _ = t.SetLayeredWindowAttributes(self.hwnd, 0, new_alpha, t.LWA_ALPHA);
         }
     }

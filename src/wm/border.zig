@@ -3,6 +3,9 @@ const Config = @import("../domain/config.zig").Config;
 const Window = @import("../platform/window.zig").Window;
 const logger = @import("../infra/logger.zig");
 
+const DWM_COLOR_DEFAULT: u32 = 0xFFFFFFFF;
+
+// Active window border highlight manager using DWMWA_BORDER_COLOR (Windows 11)
 pub const BorderManager = struct {
     last_active: ?t.HWND = null,
     config: *const Config,
@@ -44,7 +47,8 @@ pub const BorderManager = struct {
 
     fn applyBorder(self: *BorderManager, hwnd: t.HWND) void {
         if (t.IsWindowVisible(hwnd) != 0) {
-            const hr = t.DwmSetWindowAttribute(hwnd, t.DWMWA_BORDER_COLOR, &self.config.active_border_color, @sizeOf(u32));
+            const cref = self.config.active_border_color.toColorRef();
+            const hr = t.DwmSetWindowAttribute(hwnd, t.DWMWA_BORDER_COLOR, &cref, @sizeOf(u32));
             if (hr == 0) {
                 self.last_active = hwnd;
             } else {
@@ -56,7 +60,7 @@ pub const BorderManager = struct {
     pub fn reset(self: *BorderManager) void {
         if (self.last_active) |prev| {
             if (t.IsWindow(prev) != 0) {
-                _ = t.DwmSetWindowAttribute(prev, t.DWMWA_BORDER_COLOR, &self.config.border_reset_color, @sizeOf(u32));
+                _ = t.DwmSetWindowAttribute(prev, t.DWMWA_BORDER_COLOR, &DWM_COLOR_DEFAULT, @sizeOf(u32));
             }
             self.last_active = null;
         }

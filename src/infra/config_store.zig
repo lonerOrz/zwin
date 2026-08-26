@@ -5,15 +5,20 @@ const logger = @import("logger.zig");
 
 pub const ConfigStore = struct {
     pub fn load(allocator: std.mem.Allocator) Config {
-        const cfg_dir = Paths.getXdgConfigDir(allocator) catch return .{};
+        const cfg_dir = Paths.getConfigDir(allocator) catch return .{};
         defer allocator.free(cfg_dir);
         Paths.makeDirs(cfg_dir);
 
         const cfg_file_path = std.fmt.allocPrint(allocator, "{s}\\config.json", .{cfg_dir}) catch return .{};
         defer allocator.free(cfg_file_path);
 
-        const json_bytes = Paths.readSmallFile(allocator, cfg_file_path, 64 * 1024) catch {
-            Paths.writeFile(cfg_file_path, Config.default_json) catch {};
+        const json_bytes = Paths.readSmallFile(allocator, cfg_file_path, 64 * 1024) catch |err| {
+            // Seed defaults only on fresh install; avoid overwriting on transient read errors
+            if (err == error.FileNotFound) {
+                Paths.writeFile(cfg_file_path, Config.default_json) catch {};
+            } else {
+                logger.warn("Config", "read config failed err={s}, using defaults in memory only", .{@errorName(err)});
+            }
             return .{};
         };
         defer allocator.free(json_bytes);
@@ -22,7 +27,7 @@ pub const ConfigStore = struct {
     }
 
     pub fn save(allocator: std.mem.Allocator, config: *const Config) void {
-        const cfg_dir = Paths.getXdgConfigDir(allocator) catch return;
+        const cfg_dir = Paths.getConfigDir(allocator) catch return;
         defer allocator.free(cfg_dir);
 
         const cfg_file_path = std.fmt.allocPrint(allocator, "{s}\\config.json", .{cfg_dir}) catch return;

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Language = @import("../infra/i18n.zig").Language;
+pub const Color = @import("color.zig").Color;
 
 pub const Config = struct {
     language: Language = .auto,
@@ -11,10 +12,10 @@ pub const Config = struct {
     enable_border: bool = true,
     enable_wheel_opacity: bool = true,
     enable_autostart: bool = false,
+    enable_elevated: bool = false,
     opacity_step: u8 = 15,
 
-    active_border_color: u32 = 0x000088FF,
-    border_reset_color: u32 = 0xFFFFFFFF,
+    active_border_color: Color = Color.rgb(255, 136, 0),
 
     min_window_width: i32 = 120,
     min_window_height: i32 = 100,
@@ -30,6 +31,7 @@ pub const Config = struct {
         \\  "enable_border": true,
         \\  "enable_wheel_opacity": true,
         \\  "enable_autostart": false,
+        \\  "enable_elevated": false,
         \\  "opacity_step": 15,
         \\  "active_border_hex": "#FF8800",
         \\  "min_window_width": 120,
@@ -38,16 +40,10 @@ pub const Config = struct {
         \\}
     ;
 
-    pub fn colorToHex(color: u32, buf: *[7]u8) []const u8 {
-        const r: u8 = @truncate(color & 0xFF);
-        const g: u8 = @truncate((color >> 8) & 0xFF);
-        const b: u8 = @truncate((color >> 16) & 0xFF);
-        return std.fmt.bufPrint(buf, "#{X:0>2}{X:0>2}{X:0>2}", .{ r, g, b }) catch "#FF8800";
-    }
-
+    // Serialize configuration to formatted JSON string
     pub fn serializeToJson(self: *const Config, allocator: std.mem.Allocator) ![]u8 {
         var hex_buf: [7]u8 = undefined;
-        const hex = colorToHex(self.active_border_color, &hex_buf);
+        const hex = self.active_border_color.toHex(&hex_buf);
 
         return std.fmt.allocPrint(
             allocator,
@@ -59,6 +55,7 @@ pub const Config = struct {
             \\  "enable_border": {},
             \\  "enable_wheel_opacity": {},
             \\  "enable_autostart": {},
+            \\  "enable_elevated": {},
             \\  "opacity_step": {d},
             \\  "active_border_hex": "{s}",
             \\  "min_window_width": {d},
@@ -75,6 +72,7 @@ pub const Config = struct {
                 self.enable_border,
                 self.enable_wheel_opacity,
                 self.enable_autostart,
+                self.enable_elevated,
                 self.opacity_step,
                 hex,
                 self.min_window_width,
@@ -84,18 +82,7 @@ pub const Config = struct {
         );
     }
 
-    pub fn parseHexColor(hex: []const u8) ?u32 {
-        var str = hex;
-        if (std.mem.startsWith(u8, str, "#")) str = str[1..];
-        if (str.len != 6) return null;
-
-        const rgb = std.fmt.parseInt(u32, str, 16) catch return null;
-        const r = (rgb >> 16) & 0xFF;
-        const g = (rgb >> 8) & 0xFF;
-        const b = rgb & 0xFF;
-        return (b << 16) | (g << 8) | r;
-    }
-
+    // Parse configuration from JSON with fallback to defaults and value clamping
     pub fn loadFromJson(allocator: std.mem.Allocator, json_bytes: []const u8) Config {
         var result = Config{};
 
@@ -107,6 +94,7 @@ pub const Config = struct {
             enable_border: ?bool = null,
             enable_wheel_opacity: ?bool = null,
             enable_autostart: ?bool = null,
+            enable_elevated: ?bool = null,
             opacity_step: ?u8 = null,
             active_border_hex: ?[]const u8 = null,
             min_window_width: ?i32 = null,
@@ -122,10 +110,11 @@ pub const Config = struct {
         if (v.enable_border) |eb| result.enable_border = eb;
         if (v.enable_wheel_opacity) |wo| result.enable_wheel_opacity = wo;
         if (v.enable_autostart) |ea| result.enable_autostart = ea;
-        if (v.opacity_step) |os| result.opacity_step = os;
-        if (v.min_window_width) |mw| result.min_window_width = mw;
-        if (v.min_window_height) |mh| result.min_window_height = mh;
-        if (v.log_max_days) |ld| result.log_max_days = ld;
+        if (v.enable_elevated) |ee| result.enable_elevated = ee;
+        if (v.opacity_step) |os| result.opacity_step = std.math.clamp(os, 1, 100);
+        if (v.min_window_width) |mw| result.min_window_width = @max(mw, 50);
+        if (v.min_window_height) |mh| result.min_window_height = @max(mh, 50);
+        if (v.log_max_days) |ld| result.log_max_days = @max(ld, 1);
 
         if (v.key_center) |kc| if (kc.len > 0 and std.ascii.isAlphanumeric(kc[0])) {
             result.key_center = std.ascii.toUpper(kc[0]);
@@ -138,32 +127,45 @@ pub const Config = struct {
         };
 
         if (v.active_border_hex) |hex| {
-            if (parseHexColor(hex)) |c| result.active_border_color = c;
+            if (Color.fromHex(hex)) |c| result.active_border_color = c;
         }
 
         return result;
     }
 };
 
-test "parseHexColor maps to COLORREF" {
-    try std.testing.expectEqual(@as(u32, 0x000088FF), Config.parseHexColor("#FF8800").?);
-    try std.testing.expectEqual(@as(u32, 0x000000FF), Config.parseHexColor("FF0000").?);
-    try std.testing.expectEqual(@as(?u32, null), Config.parseHexColor("#XYZ"));
-    try std.testing.expectEqual(@as(?u32, null), Config.parseHexColor("#12345"));
-}
-
 test "loadFromJson overrides defaults" {
     const c = Config.loadFromJson(std.testing.allocator, "{\"active_border_hex\":\"#00FF00\",\"opacity_step\":40,\"unknown_field\":1}");
-    try std.testing.expectEqual(@as(u32, 0x0000FF00), c.active_border_color);
+    try std.testing.expectEqual(Color.rgb(0, 255, 0), c.active_border_color);
     try std.testing.expectEqual(@as(u8, 40), c.opacity_step);
     try std.testing.expectEqual(Config{}, Config.loadFromJson(std.testing.allocator, "not json"));
 }
 
+test "loadFromJson keeps default color on malformed hex without crashing" {
+    const c = Config.loadFromJson(std.testing.allocator, "{\"active_border_hex\":\"#XYZ\"}");
+    try std.testing.expectEqual(Config{}, c);
+
+    const short = Config.loadFromJson(std.testing.allocator, "{\"active_border_hex\":\"FF880\"}");
+    try std.testing.expectEqual(Config{}, short);
+}
+
+test "loadFromJson clamps out-of-range numeric settings" {
+    const allocator = std.testing.allocator;
+    const c = Config.loadFromJson(allocator, "{\"min_window_width\":-40,\"min_window_height\":0,\"log_max_days\":0,\"opacity_step\":255}");
+    try std.testing.expectEqual(@as(i32, 50), c.min_window_width);
+    try std.testing.expectEqual(@as(i32, 50), c.min_window_height);
+    try std.testing.expectEqual(@as(u32, 1), c.log_max_days);
+    try std.testing.expectEqual(@as(u8, 100), c.opacity_step);
+
+    const low = Config.loadFromJson(allocator, "{\"opacity_step\":0}");
+    try std.testing.expectEqual(@as(u8, 1), low.opacity_step);
+}
+
 test "serializeToJson roundtrips through loadFromJson" {
     const allocator = std.testing.allocator;
-    var cfg = Config{ .language = .zh_CN, .opacity_step = 33, .min_window_width = 200 };
+    var cfg = Config{ .language = .zh_CN, .enable_elevated = true, .opacity_step = 33, .min_window_width = 200 };
     cfg.key_center = 'Z';
-    cfg.active_border_color = 0x00AA55;
+    cfg.active_border_color = Color.rgb(0x55, 0xAA, 0x00);
 
     const json = try cfg.serializeToJson(allocator);
     defer allocator.free(json);

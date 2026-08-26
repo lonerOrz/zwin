@@ -1,1 +1,5 @@
+// 1 = app/window-class icon
 1 ICON "zwin.ico"
+// 2/3 = tray paused/enabled states (icons from AltSnap, GPLv3)
+2 ICON "tray-disabled.ico"
+3 ICON "tray-enabled.ico"

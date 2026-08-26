@@ -1,18 +1,23 @@
 const std = @import("std");
 const t = @import("platform/win32.zig");
+const geom = @import("calc/geometry.zig");
 const Paths = @import("platform/paths.zig").Paths;
+const Window = @import("platform/window.zig").Window;
 const Config = @import("domain/config.zig").Config;
-const Logger = @import("infra/logger.zig").Logger;
+const UserIntent = @import("domain/intent.zig").UserIntent;
+const WindowTarget = @import("domain/window_target.zig").WindowTarget;
 const logger = @import("infra/logger.zig");
+const Logger = logger.Logger;
 const WindowWorker = @import("infra/worker.zig").WindowWorker;
 const ConfigWatcher = @import("infra/watcher.zig").ConfigWatcher;
 const ConfigStore = @import("infra/config_store.zig").ConfigStore;
 const BorderManager = @import("wm/border.zig").BorderManager;
 const GestureStateMachine = @import("input/gesture.zig").GestureStateMachine;
-const HookDispatcher = @import("input/hook.zig").HookDispatcher;
+const InputEngine = @import("input/engine.zig").InputEngine;
 const Autostart = @import("platform/autostart.zig").Autostart;
 const I18n = @import("infra/i18n.zig").I18n;
 
+// Tray menu command IDs
 const CMD_TOGGLE_PAUSE: usize = 1001;
 const CMD_TOGGLE_BORDER: usize = 1002;
 const CMD_TOGGLE_AUTOSTART: usize = 1003;
@@ -20,8 +25,15 @@ const CMD_RELOAD_CONFIG: usize = 1004;
 const CMD_OPEN_CONFIG_DIR: usize = 1005;
 const CMD_OPEN_LOG_DIR: usize = 1006;
 const CMD_EXIT: usize = 1007;
+const CMD_RESTART: usize = 1008;
+const CMD_TOGGLE_ADMIN: usize = 1009;
 
+// Timer IDs
 const TIMER_BORDER_REINFORCE: usize = 2001;
+const TIMER_REHOOK_WATCHDOG: usize = 2002;
+
+pub const single_instance_mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("zwin_SingleInstance_Mutex");
+const elevation_task_name = "zwin";
 
 pub const App = struct {
     allocator: std.mem.Allocator,
@@ -30,10 +42,18 @@ pub const App = struct {
     worker: WindowWorker,
     border_mgr: BorderManager,
     gesture: GestureStateMachine,
-    hook_engine: HookDispatcher,
+    hook_engine: InputEngine,
     watcher: ConfigWatcher = .{},
     main_hwnd: ?t.HWND = null,
+    single_instance_mutex: ?t.HANDLE = null,
     nid: t.NOTIFYICONDATAW = undefined,
+    last_config_write_ms: u64 = 0,
+    quitting: bool = false,
+    taskbar_created_msg: u32 = 0,
+    watchdog_pt: t.POINT = .{ .x = 0, .y = 0 },
+    current_session_id: u64 = 0,
+    hicon_enabled: ?t.HICON = null,
+    hicon_disabled: ?t.HICON = null,
 
     fg_hook: ?t.HWINEVENTHOOK = null,
     obj_hook: ?t.HWINEVENTHOOK = null,
@@ -45,7 +65,7 @@ pub const App = struct {
         errdefer allocator.destroy(self);
 
         const config = ConfigStore.load(allocator);
-        const logger_inst = Logger.init(config.log_max_days);
+        const logger_inst = Logger.init(allocator, config.log_max_days);
 
         self.* = .{
             .allocator = allocator,
@@ -61,26 +81,42 @@ pub const App = struct {
 
         self.border_mgr = BorderManager.init(&self.config);
         self.gesture = GestureStateMachine.init(&self.worker, &self.config);
-        self.hook_engine = HookDispatcher.init(&self.gesture, &self.config);
+        self.hook_engine = InputEngine.init(&self.gesture, &self.config);
 
         App.global = self;
         return self;
     }
 
     pub fn start(self: *App, hinst: ?t.HINSTANCE) !void {
-        try self.worker.start();
-        try self.hook_engine.install(hinst);
+        // Boost scheduling priority to avoid LowLevelHooksTimeout under load
+        _ = t.SetPriorityClass(t.GetCurrentProcess(), t.HIGH_PRIORITY_CLASS);
+        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
+
+        self.current_session_id = self.worker.invalidateSession();
         try self.createMessageWindow(hinst);
-        try self.watcher.start(self.main_hwnd.?);
 
-        Autostart.setEnabled(self.config.enable_autostart);
+        // Register TaskbarCreated and allow UIPI bypass when elevated
+        self.taskbar_created_msg = t.RegisterWindowMessageW(std.unicode.utf8ToUtf16LeStringLiteral("TaskbarCreated"));
+        if (self.taskbar_created_msg != 0 and self.isAdmin()) {
+            _ = t.ChangeWindowMessageFilterEx(self.main_hwnd.?, self.taskbar_created_msg, t.MSGFLT_ALLOW, null);
+        }
 
+        try self.worker.start();
+        try self.hook_engine.install(hinst, self.main_hwnd.?);
+        try self.watcher.start(self.allocator, self.main_hwnd.?);
+
+        // Arm watchdog timer to detect detached hooks
+        _ = t.SetTimer(self.main_hwnd.?, TIMER_REHOOK_WATCHDOG, 5000, null);
+
+        self.syncAutostartState();
+
+        // Hook window lifecycle and foreground focus events
         self.fg_hook = t.SetWinEventHook(t.EVENT_SYSTEM_FOREGROUND, t.EVENT_SYSTEM_MINIMIZEEND, null, winEventCallback, 0, 0, t.WINEVENT_OUTOFCONTEXT);
         self.obj_hook = t.SetWinEventHook(t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE, null, winEventCallback, 0, 0, t.WINEVENT_OUTOFCONTEXT);
         self.initTrayIcon(hinst);
 
         self.refreshActiveBorder();
-        logger.info("App", "zwin runtime ready", .{});
+        logger.info("App", "zwin runtime ready (elevated={})", .{self.isAdmin()});
     }
 
     pub fn deinit(self: *App) void {
@@ -97,7 +133,13 @@ pub const App = struct {
 
         if (self.main_hwnd) |hwnd| {
             _ = t.KillTimer(hwnd, TIMER_BORDER_REINFORCE);
+            _ = t.KillTimer(hwnd, TIMER_REHOOK_WATCHDOG);
             _ = t.DestroyWindow(hwnd);
+        }
+
+        if (self.single_instance_mutex) |m| {
+            _ = t.CloseHandle(m);
+            self.single_instance_mutex = null;
         }
 
         Logger.global = null;
@@ -105,30 +147,273 @@ pub const App = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn reloadConfig(self: *App) void {
-        logger.info("App", "reloading config from disk", .{});
-        const prev_autostart = self.config.enable_autostart;
-        self.config = ConfigStore.load(self.allocator);
-        if (self.config.enable_autostart != prev_autostart) {
-            Autostart.setEnabled(self.config.enable_autostart);
+    pub fn restart(self: *App) void {
+        logger.info("App", "restarting zwin instance...", .{});
+        var path_buf: [1024]u16 = undefined;
+        const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (len == 0 or len >= path_buf.len) return;
+
+        // Release mutex before spawning new process
+        if (self.single_instance_mutex) |m| {
+            _ = t.CloseHandle(m);
+            self.single_instance_mutex = null;
         }
-        self.updateTrayTip(self.hook_engine.paused.load(.acquire));
+
+        const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), path_buf[0..len :0].ptr, null, null, 1);
+        if (@intFromPtr(res) <= 32) return;
+
+        self.quitting = true;
+        _ = t.PostQuitMessage(0);
+    }
+
+    pub fn isAdmin(_: *const App) bool {
+        return t.IsUserAnAdmin() != 0;
+    }
+
+    // Relaunch with elevated privileges
+    pub fn relaunchAsAdmin(self: *App) bool {
+        if (self.isAdmin()) return false;
+
+        logger.info("App", "elevating zwin to administrator...", .{});
+        var path_buf: [1024]u16 = undefined;
+        const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (len == 0 or len >= path_buf.len) return false;
+
+        if (self.single_instance_mutex) |m| {
+            _ = t.CloseHandle(m);
+            self.single_instance_mutex = null;
+        }
+        _ = t.Shell_NotifyIconW(t.NIM_DELETE, &self.nid);
+
+        const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("runas"), path_buf[0..len :0].ptr, null, null, 1);
+        if (@intFromPtr(res) > 32) {
+            self.quitting = true;
+            _ = t.PostQuitMessage(0);
+            return true;
+        }
+
+        logger.warn("App", "elevation cancelled by user, restoring mutex", .{});
+        self.restoreMutex();
+        _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
+        return false;
+    }
+
+    // Relaunch with unelevated privileges
+    pub fn relaunchUnelevated(self: *App) bool {
+        if (!self.isAdmin()) return false;
+
+        logger.info("App", "relaunching zwin without elevation...", .{});
+        var path_buf: [1024]u16 = undefined;
+        const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (len == 0 or len >= path_buf.len) return false;
+
+        if (self.single_instance_mutex) |m| {
+            _ = t.CloseHandle(m);
+            self.single_instance_mutex = null;
+        }
+        _ = t.Shell_NotifyIconW(t.NIM_DELETE, &self.nid);
+
+        const exe_u8 = std.unicode.utf16LeToUtf8Alloc(self.allocator, path_buf[0..len]) catch {
+            self.restoreMutex();
+            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
+            return false;
+        };
+        defer self.allocator.free(exe_u8);
+        const params_u8 = std.fmt.allocPrint(self.allocator, "/trustlevel:0x20000 \"{s}\"", .{exe_u8}) catch {
+            self.restoreMutex();
+            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
+            return false;
+        };
+        defer self.allocator.free(params_u8);
+        const params_w = std.unicode.utf8ToUtf16LeAllocZ(self.allocator, params_u8) catch {
+            self.restoreMutex();
+            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
+            return false;
+        };
+        defer self.allocator.free(params_w);
+
+        const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), std.unicode.utf8ToUtf16LeStringLiteral("runas.exe"), params_w.ptr, null, 0);
+        if (@intFromPtr(res) > 32) {
+            self.quitting = true;
+            _ = t.PostQuitMessage(0);
+            return true;
+        }
+
+        logger.warn("App", "de-elevation launch failed, restoring mutex", .{});
+        self.restoreMutex();
+        _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
+        return false;
+    }
+
+    fn restoreMutex(self: *App) void {
+        self.single_instance_mutex = t.CreateMutexW(null, 1, single_instance_mutex_name);
+        if (self.single_instance_mutex == null) {
+            logger.err("App", "mutex re-create failed gle={d}", .{t.GetLastError()});
+        }
+    }
+
+    // Execute schtasks command silently
+    fn runSchtasks(self: *App, args_u8: []const u8) bool {
+        const cmd_u8 = std.fmt.allocPrint(self.allocator, "schtasks.exe {s}", .{args_u8}) catch return false;
+        defer self.allocator.free(cmd_u8);
+        const cmd_wide = std.unicode.utf8ToUtf16LeAllocZ(self.allocator, cmd_u8) catch return false;
+        defer self.allocator.free(cmd_wide);
+
+        var si: t.STARTUPINFOW = .{ .cb = @sizeOf(t.STARTUPINFOW) };
+        var pi: t.PROCESS_INFORMATION = undefined;
+        if (t.CreateProcessW(null, cmd_wide.ptr, null, null, 0, t.CREATE_NO_WINDOW, null, null, &si, &pi) == 0) return false;
+        _ = t.CloseHandle(pi.hThread);
+        defer _ = t.CloseHandle(pi.hProcess);
+
+        _ = t.WaitForSingleObject(pi.hProcess, 10_000);
+        var exit_code: u32 = 1;
+        _ = t.GetExitCodeProcess(pi.hProcess, &exit_code);
+        return exit_code == 0;
+    }
+
+    // Register ONLOGON task at highest run level for silent elevated autostart
+    fn ensureElevationTask(self: *App) void {
+        var path_buf: [1024]u16 = undefined;
+        const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
+        if (len == 0 or len >= path_buf.len) return;
+
+        const exe_u8 = std.unicode.utf16LeToUtf8Alloc(self.allocator, path_buf[0..len]) catch return;
+        defer self.allocator.free(exe_u8);
+
+        const args = std.fmt.allocPrint(self.allocator, "/Create /F /TN \"{s}\" /TR \\\"{s}\\\" /SC ONLOGON /RL HIGHEST", .{ elevation_task_name, exe_u8 }) catch return;
+        defer self.allocator.free(args);
+
+        if (self.runSchtasks(args)) {
+            logger.info("App", "elevation task registered", .{});
+        } else {
+            logger.warn("App", "failed to register elevation task", .{});
+        }
+    }
+
+    fn deleteElevationTask(self: *App) void {
+        const args = std.fmt.allocPrint(self.allocator, "/Delete /F /TN \"{s}\"", .{elevation_task_name}) catch return;
+        defer self.allocator.free(args);
+
+        if (self.runSchtasks(args)) {
+            logger.info("App", "elevation scheduled task removed", .{});
+        } else {
+            logger.warn("App", "failed to remove elevation scheduled task", .{});
+        }
+    }
+
+    // Ensure registry Run key and scheduled task are mutually exclusive
+    pub fn syncAutostartState(self: *App) void {
+        if (!self.config.enable_autostart) {
+            Autostart.setEnabled(false);
+            if (self.isAdmin()) self.deleteElevationTask();
+            return;
+        }
+
+        if (self.config.enable_elevated and self.isAdmin()) {
+            Autostart.setEnabled(false);
+            self.ensureElevationTask();
+        } else {
+            if (self.isAdmin()) self.deleteElevationTask();
+            Autostart.setEnabled(true);
+        }
+    }
+
+    // Reload config: update settings and autostart without auto-restarting
+    pub fn reloadConfig(self: *App) void {
+        if (self.quitting) return;
+        logger.info("App", "reloading config from disk", .{});
+
+        const prev_autostart = self.config.enable_autostart;
+        const prev_elevated = self.config.enable_elevated;
+        self.config = ConfigStore.load(self.allocator);
+
+        if (self.config.enable_autostart != prev_autostart or self.config.enable_elevated != prev_elevated) {
+            self.syncAutostartState();
+        }
+
+        if (self.config.enable_elevated != self.isAdmin()) {
+            logger.info("App", "elevation preference differs from token; toggle via tray menu to apply", .{});
+        }
+
+        self.updateTrayState(self.hook_engine.paused.load(.acquire));
         self.refreshActiveBorder();
     }
 
     pub fn saveConfig(self: *App) void {
         ConfigStore.save(self.allocator, &self.config);
+        self.last_config_write_ms = t.GetTickCount64();
     }
 
     pub fn setPaused(self: *App, paused: bool) void {
         self.hook_engine.paused.store(paused, .release);
-        self.updateTrayTip(paused);
+        self.updateTrayState(paused);
     }
 
     pub fn scheduleBorderReinforce(self: *App) void {
         if (self.main_hwnd) |hwnd| {
             _ = t.SetTimer(hwnd, TIMER_BORDER_REINFORCE, 60, null);
         }
+    }
+
+    // Dispatch user intents on the main thread
+    pub fn handleIntent(self: *App, intent: UserIntent) void {
+        switch (intent) {
+            .center_active_window => {
+                const target = self.resolveActiveTarget() orelse return;
+                const win = Window.init(target.hwnd);
+                win.ensureRestored();
+                if (win.getMonitorWorkArea()) |wa| {
+                    const bounds = win.getPhysicalBounds();
+                    const pad = win.getShadowPadding();
+                    const centered = geom.calculateCenterRect(wa, bounds, pad);
+                    self.worker.postDiscrete(target, .{ .set_bounds = .{
+                        .x = centered.left,
+                        .y = centered.top,
+                        .w = centered.width(),
+                        .h = centered.height(),
+                    } });
+                }
+            },
+            .toggle_active_topmost => {
+                const target = self.resolveActiveTarget() orelse return;
+                const ex_style = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
+                const is_topmost = (ex_style & t.WS_EX_TOPMOST) != 0;
+                self.worker.postDiscrete(target, .{
+                    .set_topmost = .{ .is_topmost = !is_topmost },
+                });
+            },
+            .close_active_window => {
+                const target = self.resolveActiveTarget() orelse return;
+                Window.init(target.hwnd).close();
+            },
+            .abort_gesture => {
+                self.gesture.abort();
+            },
+            .minimize_at => |m| {
+                const target = self.resolveTargetAtPoint(m.pt) orelse return;
+                Window.init(target.hwnd).minimize();
+            },
+            .adjust_opacity_at => |op| {
+                const target = self.resolveTargetAtPoint(op.pt) orelse self.resolveActiveTarget() orelse return;
+                Window.init(target.hwnd).adjustOpacity(op.delta);
+            },
+        }
+    }
+
+    fn resolveActiveTarget(self: *App) ?WindowTarget {
+        const raw_fg = t.GetForegroundWindow() orelse return null;
+        const top = Window.getTrueTopLevel(raw_fg) orelse return null;
+        const win = Window.init(top);
+        if (win.isExclusiveFullScreen()) return null;
+        return .{ .hwnd = top, .session_id = self.current_session_id };
+    }
+
+    fn resolveTargetAtPoint(self: *App, pt: geom.Point) ?WindowTarget {
+        const raw_hwnd = t.WindowFromPoint(.{ .x = pt.x, .y = pt.y }) orelse return null;
+        const top = Window.getTrueTopLevel(raw_hwnd) orelse return null;
+        const win = Window.init(top);
+        if (win.isExclusiveFullScreen()) return null;
+        return .{ .hwnd = top, .session_id = self.current_session_id };
     }
 
     fn refreshActiveBorder(self: *App) void {
@@ -140,7 +425,6 @@ pub const App = struct {
 
     fn createMessageWindow(self: *App, hinst: ?t.HINSTANCE) !void {
         const class_name = std.unicode.utf8ToUtf16LeStringLiteral("zwin_MsgWindow");
-
         const wnd_class = t.WNDCLASSEXW{
             .lpfnWndProc = appWndProc,
             .hInstance = hinst,
@@ -172,23 +456,28 @@ pub const App = struct {
 
     fn initTrayIcon(self: *App, hinst: ?t.HINSTANCE) void {
         const hwnd = self.main_hwnd orelse return;
+        self.hicon_enabled = t.LoadIconW(hinst, intResource(3)) orelse t.LoadIconW(null, intResource(32512));
+        self.hicon_disabled = t.LoadIconW(hinst, intResource(2)) orelse t.LoadIconW(null, intResource(32515));
+
+        const is_paused = self.hook_engine.paused.load(.acquire);
         self.nid = .{
             .hWnd = hwnd,
             .uID = 1,
             .uFlags = t.NIF_MESSAGE | t.NIF_ICON | t.NIF_TIP,
             .uCallbackMessage = t.WM_TRAY,
-            .hIcon = t.LoadIconW(hinst, intResource(1)) orelse t.LoadIconW(null, intResource(32512)),
+            .hIcon = if (is_paused) self.hicon_disabled else self.hicon_enabled,
         };
+
         const ok = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
         if (ok == 0) {
             logger.err("App", "Shell_NotifyIconW(NIM_ADD) failed gle={d}", .{t.GetLastError()});
         } else {
             logger.info("App", "tray icon added", .{});
         }
-        self.updateTrayTip(self.hook_engine.paused.load(.acquire));
+        self.updateTrayState(is_paused);
     }
 
-    pub fn updateTrayTip(self: *App, is_paused: bool) void {
+    pub fn updateTrayState(self: *App, is_paused: bool) void {
         const strings = I18n.getStrings(self.config.language);
         const tip = if (is_paused) strings.tray_paused else strings.tray_running;
 
@@ -196,6 +485,9 @@ pub const App = struct {
         while (len < self.nid.szTip.len - 1 and tip[len] != 0) : (len += 1) {}
         @memcpy(self.nid.szTip[0..len], tip[0..len]);
         self.nid.szTip[len] = 0;
+
+        self.nid.hIcon = if (is_paused) self.hicon_disabled else self.hicon_enabled;
+        self.nid.uFlags = t.NIF_ICON | t.NIF_TIP;
         if (t.Shell_NotifyIconW(t.NIM_MODIFY, &self.nid) == 0) {
             logger.warn("App", "Shell_NotifyIconW(NIM_MODIFY) failed gle={d}", .{t.GetLastError()});
         }
@@ -224,10 +516,18 @@ fn winEventCallback(_: t.HWINEVENTHOOK, event: u32, hwnd: t.HWND, idObject: i32,
 fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winapi) t.LRESULT {
     const app = App.global orelse return t.DefWindowProcW(hwnd, msg, wParam, lParam);
 
+    // Re-add tray icon if Explorer restarts
+    if (app.taskbar_created_msg != 0 and msg == app.taskbar_created_msg) {
+        _ = t.Shell_NotifyIconW(t.NIM_ADD, &app.nid);
+        app.updateTrayState(app.hook_engine.paused.load(.acquire));
+        return 0;
+    }
+
     switch (msg) {
         t.WM_TRAY => {
             logger.debug("Tray", "event wParam={x} lParam={x}", .{ wParam, lParam });
             const event_msg: u32 = @truncate(@as(usize, @bitCast(lParam)));
+
             if (event_msg == t.WM_LBUTTONDBLCLK) {
                 const current = app.hook_engine.paused.load(.acquire);
                 app.setPaused(!current);
@@ -243,15 +543,19 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 const pause_flags = t.MF_STRING | (if (app.hook_engine.paused.load(.acquire)) t.MF_CHECKED else t.MF_UNCHECKED);
                 const border_flags = t.MF_STRING | (if (app.config.enable_border) t.MF_CHECKED else t.MF_UNCHECKED);
                 const autostart_flags = t.MF_STRING | (if (app.config.enable_autostart) t.MF_CHECKED else t.MF_UNCHECKED);
+                const admin_flags = t.MF_STRING | (if (app.isAdmin()) t.MF_CHECKED else t.MF_UNCHECKED);
+                const admin_label = if (app.isAdmin()) strings.menu_normal else strings.menu_admin;
 
                 _ = t.AppendMenuW(menu, pause_flags, CMD_TOGGLE_PAUSE, strings.menu_pause);
                 _ = t.AppendMenuW(menu, border_flags, CMD_TOGGLE_BORDER, strings.menu_border);
                 _ = t.AppendMenuW(menu, autostart_flags, CMD_TOGGLE_AUTOSTART, strings.menu_autostart);
+                _ = t.AppendMenuW(menu, admin_flags, CMD_TOGGLE_ADMIN, admin_label);
                 _ = t.AppendMenuW(menu, t.MF_SEPARATOR, 0, null);
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_RELOAD_CONFIG, strings.menu_reload);
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_OPEN_CONFIG_DIR, strings.menu_open_config);
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_OPEN_LOG_DIR, strings.menu_open_log);
                 _ = t.AppendMenuW(menu, t.MF_SEPARATOR, 0, null);
+                _ = t.AppendMenuW(menu, t.MF_STRING, CMD_RESTART, strings.menu_restart);
                 _ = t.AppendMenuW(menu, t.MF_STRING, CMD_EXIT, strings.menu_exit);
 
                 _ = t.SetForegroundWindow(hwnd);
@@ -273,13 +577,34 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 },
                 CMD_TOGGLE_AUTOSTART => {
                     app.config.enable_autostart = !app.config.enable_autostart;
-                    Autostart.setEnabled(app.config.enable_autostart);
+                    app.syncAutostartState();
                     app.saveConfig();
                 },
                 CMD_RELOAD_CONFIG => app.reloadConfig(),
                 CMD_OPEN_CONFIG_DIR => openDirInExplorer(app, .config),
                 CMD_OPEN_LOG_DIR => openDirInExplorer(app, .log),
-                CMD_EXIT => _ = t.PostQuitMessage(0),
+                CMD_RESTART => app.restart(),
+                CMD_TOGGLE_ADMIN => {
+                    const want_elevated = !app.isAdmin();
+                    app.config.enable_elevated = want_elevated;
+
+                    if (!want_elevated and app.isAdmin()) app.deleteElevationTask();
+
+                    app.syncAutostartState();
+                    app.saveConfig();
+
+                    const launched = if (want_elevated) app.relaunchAsAdmin() else app.relaunchUnelevated();
+                    if (!launched) {
+                        app.config.enable_elevated = !want_elevated;
+                        app.syncAutostartState();
+                        app.saveConfig();
+                        logger.info("App", "elevation preference rolled back to match current token", .{});
+                    }
+                },
+                CMD_EXIT => {
+                    app.quitting = true;
+                    _ = t.PostQuitMessage(0);
+                },
                 else => {
                     logger.warn("Tray", "unhandled command id={d}", .{wParam & 0xFFFF});
                 },
@@ -291,11 +616,33 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 if (t.GetForegroundWindow()) |current_fg| {
                     app.border_mgr.refreshCurrent(current_fg);
                 }
+            } else if (wParam == TIMER_REHOOK_WATCHDOG) {
+                var cur: t.POINT = undefined;
+                if (!app.quitting and t.GetCursorPos(&cur) != 0) {
+                    const moved = cur.x != app.watchdog_pt.x or cur.y != app.watchdog_pt.y;
+                    const last_seen = app.hook_engine.last_hook_mouse_ms.load(.acquire);
+
+                    // Reinstall hooks if cursor moved but no hook callback was received
+                    if (moved and t.GetTickCount64() - last_seen > 6000) {
+                        app.hook_engine.reinstall();
+                    }
+                    app.watchdog_pt = cur;
+                }
             }
         },
         t.WM_APP_EVENT => {
             const event: u32 = @intCast(wParam);
-            if (event == ConfigWatcher.CONFIG_CHANGED_EVENT) app.reloadConfig();
+            // Ignore change notifications caused by our own recent saves
+            if (event == ConfigWatcher.CONFIG_CHANGED_EVENT and
+                t.GetTickCount64() - app.last_config_write_ms >= 300)
+            {
+                app.reloadConfig();
+            }
+        },
+        t.WM_APP_INTENT => {
+            while (app.hook_engine.nextIntent()) |intent| {
+                app.handleIntent(intent);
+            }
         },
         else => return t.DefWindowProcW(hwnd, msg, wParam, lParam),
     }
@@ -304,11 +651,11 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
 
 fn openDirInExplorer(app: *App, kind: enum { config, log }) void {
     const dir = if (kind == .config)
-        Paths.getXdgConfigDir(app.allocator)
+        Paths.getConfigDir(app.allocator)
     else
-        Paths.getXdgLogDir(app.allocator);
+        Paths.getLogDir(app.allocator);
     if (dir) |d| {
         defer app.allocator.free(d);
-        Paths.openFolderInExplorer(d);
+        Paths.openFolderInExplorer(app.allocator, d);
     } else |_| {}
 }
