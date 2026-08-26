@@ -367,16 +367,12 @@ pub const App = struct {
         if (self.config.enable_autostart != prev_autostart or self.config.enable_elevated != prev_elevated) {
             self.syncAutostartState();
         }
-        // Hand-edited elevation preference takes effect immediately via a
-        // one-shot token switch. De-elevation sync above runs while this
-        // process still holds the admin token it needs to drop the task.
+        // Elevation mismatches are NEVER resolved here: hot reload must not
+        // respawn the process (a cancelled UAC or a parse-failure default
+        // would re-trigger on every subsequent save). Toggle via tray menu
+        // or restart instead.
         if (self.config.enable_elevated != self.isAdmin()) {
-            logger.info("App", "elevation preference differs from token, applying relaunch...", .{});
-            const launched = if (self.config.enable_elevated)
-                self.relaunchAsAdmin()
-            else
-                self.relaunchUnelevated();
-            if (launched) return;
+            logger.info("App", "elevation preference differs from token; toggle via tray menu to apply", .{});
         }
         self.updateTrayState(self.hook_engine.paused.load(.acquire));
         self.refreshActiveBorder();
