@@ -1,5 +1,4 @@
 const std = @import("std");
-
 const t = @import("win32.zig");
 
 pub const Paths = struct {
@@ -15,11 +14,7 @@ pub const Paths = struct {
         return std.unicode.utf8ToUtf16LeAllocZ(allocator, path_u8);
     }
 
-    /// Pure stack conversion for short-lived paths (no heap allocation).
-    /// Capacity is judged in UTF-16 code units, not UTF-8 bytes: multibyte
-    /// sequences shrink on conversion, so a byte-length precheck would
-    /// wrongly reject valid non-ASCII paths. std.unicode.utf8ToUtf16Le has
-    /// no NoSpaceLeft error (it would overflow), hence the exact count here.
+    // Stack-allocated UTF-8 to null-terminated UTF-16 conversion with exact bounds check
     pub fn toWideFixed(path_u8: []const u8, out_buf: *[t.MAX_PATH:0]u16) ![:0]const u16 {
         const units = std.unicode.calcUtf16LeLen(path_u8) catch return error.InvalidPath;
         if (units >= t.MAX_PATH) return error.PathTooLong;
@@ -60,8 +55,6 @@ pub const Paths = struct {
         const wide = try toWideFixed(path_u8, &wide_buf);
         const h = t.CreateFileW(wide.ptr, t.GENERIC_READ, t.FILE_SHARE_READ | t.FILE_SHARE_WRITE, null, t.OPEN_EXISTING, t.FILE_ATTRIBUTE_NORMAL, null);
         if (h == t.INVALID_HANDLE_VALUE) {
-            // Callers must be able to tell "no config yet" apart from a
-            // transient sharing conflict so they never overwrite real data.
             return switch (t.GetLastError()) {
                 t.ERROR_FILE_NOT_FOUND, t.ERROR_PATH_NOT_FOUND => error.FileNotFound,
                 t.ERROR_SHARING_VIOLATION => error.SharingViolation,
@@ -166,7 +159,6 @@ fn envDir(allocator: std.mem.Allocator, comptime env_var: [:0]const u8, comptime
     if (n == 0 or n > wide_buf.len) return error.CannotResolveDir;
 
     const base = try std.unicode.utf16LeToUtf8Alloc(allocator, wide_buf[0..n]);
-
     return std.fmt.allocPrint(allocator, "{s}\\{s}", .{ base, sub_path });
 }
 
@@ -178,20 +170,19 @@ test "toWideFixed stack conversion contract" {
     try std.testing.expectEqual(@as(u16, 'C'), wide[0]);
     try std.testing.expectEqual(@as(u16, 0), buf[wide.len]);
 
-    // Exactly MAX_PATH - 1 bytes must fit.
+    // Exact MAX_PATH - 1 capacity fit
     const max_ok = "a" ** (t.MAX_PATH - 1);
     const wide_max = try Paths.toWideFixed(max_ok, &buf);
     try std.testing.expectEqual(t.MAX_PATH - 1, wide_max.len);
 
-    // MAX_PATH and beyond must fail without writing out of bounds.
+    // Overflow beyond MAX_PATH
     try std.testing.expectError(error.PathTooLong, Paths.toWideFixed("a" ** t.MAX_PATH, &buf));
     try std.testing.expectError(error.PathTooLong, Paths.toWideFixed("a" ** 400, &buf));
 
-    // Multibyte UTF-8 shrinks to fewer UTF-16 units: 300 CJK bytes (>=
-    // MAX_PATH in bytes) convert to only 100 units and must be accepted.
+    // Multibyte UTF-8 conversion to fewer UTF-16 code units
     const wide_cjk = try Paths.toWideFixed("中" ** 100, &buf);
     try std.testing.expectEqual(@as(usize, 100), wide_cjk.len);
 
-    // Invalid UTF-8 must surface as InvalidPath, not crash.
+    // Invalid UTF-8 error handling
     try std.testing.expectError(error.InvalidPath, Paths.toWideFixed("\xff\xfe bad", &buf));
 }

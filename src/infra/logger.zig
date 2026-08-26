@@ -18,6 +18,7 @@ pub const LogLevel = enum(u8) {
     }
 };
 
+// Thread-safe daily-rotated file logger
 pub const Logger = struct {
     lock: t.SRWLOCK = .{},
     log_file: t.HANDLE = t.INVALID_HANDLE_VALUE,
@@ -39,10 +40,12 @@ pub const Logger = struct {
         self.log_file = t.INVALID_HANDLE_VALUE;
     }
 
+    // Key format: YYYYMMDD
     fn localDayKey(st: t.SYSTEMTIME) u32 {
         return @as(u32, st.wYear) * 10000 + @as(u32, st.wMonth) * 100 + st.wDay;
     }
 
+    // Rotate log file and clean up logs older than max_days
     fn rotateFile(self: *Logger) void {
         const dir = Paths.getLogDir(self.alloc) catch return;
         defer self.alloc.free(dir);

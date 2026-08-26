@@ -13,9 +13,7 @@ pub const ConfigStore = struct {
         defer allocator.free(cfg_file_path);
 
         const json_bytes = Paths.readSmallFile(allocator, cfg_file_path, 64 * 1024) catch |err| {
-            // Only seed defaults when the file genuinely does not exist yet.
-            // A sharing conflict (old process still flushing during relaunch)
-            // or any other read failure must NEVER overwrite the user's file.
+            // Seed defaults only on fresh install; avoid overwriting on transient read errors
             if (err == error.FileNotFound) {
                 Paths.writeFile(cfg_file_path, Config.default_json) catch {};
             } else {

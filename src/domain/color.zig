@@ -9,7 +9,7 @@ pub const Color = struct {
         return .{ .r = r, .g = g, .b = b };
     }
 
-    /// Windows COLORREF layout: 0x00BBGGRR
+    // Windows COLORREF layout: 0x00BBGGRR
     pub fn toColorRef(self: Color) u32 {
         return @as(u32, self.r) | (@as(u32, self.g) << 8) | (@as(u32, self.b) << 16);
     }
@@ -22,13 +22,12 @@ pub const Color = struct {
         };
     }
 
-    /// Formats as #RRGGBB. bufPrint into a *[7]u8 cannot fail for this
-    /// format, so failure is a caller bug — fail loudly, never fake a value.
+    // Format as #RRGGBB into a 7-byte buffer
     pub fn toHex(self: Color, buf: *[7]u8) []const u8 {
         return std.fmt.bufPrint(buf, "#{X:0>2}{X:0>2}{X:0>2}", .{ self.r, self.g, self.b }) catch unreachable;
     }
 
-    /// Parses #RRGGBB or RRGGBB
+    // Parse #RRGGBB or RRGGBB string
     pub fn fromHex(hex: []const u8) ?Color {
         var str = hex;
         if (std.mem.startsWith(u8, str, "#")) str = str[1..];

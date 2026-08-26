@@ -31,7 +31,7 @@ fn rectFromWin32(rc: t.RECT) geom.Rect {
     return .{ .left = rc.left, .top = rc.top, .right = rc.right, .bottom = rc.bottom };
 }
 
-/// AltSnap-style WM_SIZING edge flag so apps can grid-align the proposal.
+// Map sector to WM_SIZING edge flag for grid alignment
 fn sectorToWmsz(sector: geom.Sector) usize {
     return switch (sector) {
         .top_left => t.WMSZ_TOPLEFT,
@@ -46,6 +46,7 @@ fn sectorToWmsz(sector: geom.Sector) usize {
     };
 }
 
+// Continuous gesture state machine for window drag and resize
 pub const GestureStateMachine = struct {
     state: GestureState = .idle,
     worker: *WindowWorker,
@@ -165,9 +166,7 @@ pub const GestureStateMachine = struct {
         self.state = .idle;
     }
 
-    /// ESC-abort: snap back to where the gesture started. Runs on the main
-    /// thread (via intent ring); only touches worker queues plus state owned
-    /// at that moment by nobody.
+    // Abort gesture on ESC and restore initial window bounds
     pub fn abort(self: *GestureStateMachine) void {
         switch (self.state) {
             .idle => return,
@@ -197,8 +196,7 @@ pub const GestureStateMachine = struct {
     }
 };
 
-/// Mirror the system's own move/size loop so apps update chrome, scrollbars
-/// and accessibility state; async Post keeps the hook thread non-blocking.
+// Send standard Win32 move/size lifecycle notifications
 fn announceMoveSize(hwnd: t.HWND) void {
     _ = t.PostMessageW(hwnd, t.WM_ENTERSIZEMOVE, 0, 0);
     t.NotifyWinEvent(t.EVENT_SYSTEM_MOVESIZESTART, hwnd, t.OBJID_WINDOW, 0);

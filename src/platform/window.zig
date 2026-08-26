@@ -9,6 +9,7 @@ pub const Window = struct {
         return .{ .hwnd = hwnd };
     }
 
+    // Resolve actionable top-level window, filtering tool windows, shell classes, and cloaked windows
     pub fn getTrueTopLevel(hwnd: t.HWND) ?t.HWND {
         var curr = hwnd;
         if (@intFromPtr(curr) == 0) return null;
@@ -23,8 +24,7 @@ pub const Window = struct {
         return null;
     }
 
-    /// UWP suspended apps and virtual-desktop ghosts pass IsWindowVisible
-    /// yet render nothing; DWM flags them cloaked.
+    // Check if window is cloaked (e.g. on another virtual desktop or suspended UWP)
     fn isCloaked(hwnd: t.HWND) bool {
         var cloaked: u32 = 0;
         if (t.DwmGetWindowAttribute(hwnd, t.DWMWA_CLOAKED, &cloaked, @sizeOf(u32)) == 0) {
@@ -33,6 +33,7 @@ pub const Window = struct {
         return false;
     }
 
+    // Filter out child windows, unlisted tool windows, and shell system classes
     fn isManageableTopLevel(hwnd: t.HWND) bool {
         if (@intFromPtr(hwnd) == 0) return false;
 
@@ -65,6 +66,7 @@ pub const Window = struct {
         return true;
     }
 
+    // Check if window covers the entire monitor without a standard caption
     pub fn isExclusiveFullScreen(self: Window) bool {
         if (t.IsZoomed(self.hwnd) != 0) return false;
         const style = t.GetWindowLongPtrW(self.hwnd, t.GWL_STYLE);
@@ -81,6 +83,7 @@ pub const Window = struct {
             bounds.bottom >= mi.rcMonitor.bottom;
     }
 
+    // Query physical frame bounds via DWM, falling back to GetWindowRect
     pub fn getPhysicalBounds(self: Window) geom.Rect {
         var raw_bounds: t.RECT = undefined;
         if (t.DwmGetWindowAttribute(self.hwnd, t.DWMWA_EXTENDED_FRAME_BOUNDS, &raw_bounds, @sizeOf(t.RECT)) == 0) {
@@ -90,6 +93,7 @@ pub const Window = struct {
         return .{ .left = raw_bounds.left, .top = raw_bounds.top, .right = raw_bounds.right, .bottom = raw_bounds.bottom };
     }
 
+    // Calculate drop-shadow padding offsets between whole window and visible frame
     pub fn getShadowPadding(self: Window) geom.Padding {
         var frame: t.RECT = undefined;
         var whole: t.RECT = undefined;
@@ -106,6 +110,7 @@ pub const Window = struct {
         return .{};
     }
 
+    // Query monitor work area excluding taskbar
     pub fn getMonitorWorkArea(self: Window) ?geom.Rect {
         const mon = t.MonitorFromWindow(self.hwnd, t.MONITOR_DEFAULTTONEAREST);
         var mi: t.MONITORINFO = .{ .rcMonitor = undefined, .rcWork = undefined, .dwFlags = 0 };
@@ -118,6 +123,7 @@ pub const Window = struct {
         };
     }
 
+    // Adjust window transparency, toggling WS_EX_LAYERED as needed
     pub fn adjustOpacity(self: Window, delta: i32) void {
         const ex_style = t.GetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE);
         var current_alpha: u8 = 255;

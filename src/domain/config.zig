@@ -40,6 +40,7 @@ pub const Config = struct {
         \\}
     ;
 
+    // Serialize configuration to formatted JSON string
     pub fn serializeToJson(self: *const Config, allocator: std.mem.Allocator) ![]u8 {
         var hex_buf: [7]u8 = undefined;
         const hex = self.active_border_color.toHex(&hex_buf);
@@ -81,6 +82,7 @@ pub const Config = struct {
         );
     }
 
+    // Parse configuration from JSON with fallback to defaults and value clamping
     pub fn loadFromJson(allocator: std.mem.Allocator, json_bytes: []const u8) Config {
         var result = Config{};
 

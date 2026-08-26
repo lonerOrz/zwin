@@ -5,6 +5,7 @@ const logger = @import("../infra/logger.zig");
 
 const DWM_COLOR_DEFAULT: u32 = 0xFFFFFFFF;
 
+// Active window border highlight manager using DWMWA_BORDER_COLOR (Windows 11)
 pub const BorderManager = struct {
     last_active: ?t.HWND = null,
     config: *const Config,

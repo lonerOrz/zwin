@@ -13,15 +13,14 @@ pub const DiscreteOp = union(enum) {
     set_topmost: struct { is_topmost: bool },
 };
 
-// Fixed 8-deep FIFO for discrete tasks; raise cap if a real
-// workload ever starves it.
+// Bounded FIFO capacity for discrete tasks
 const fifo_cap = 8;
 
 pub const WindowWorker = struct {
     lock: t.SRWLOCK = .{},
     cond: t.CONDITION_VARIABLE = .{},
 
-    // 1. Strictly ordered bounded FIFO (discrete critical ops).
+    // Ordered FIFO for discrete operations
     fifo_queue: [fifo_cap]struct {
         target: WindowTarget,
         op: DiscreteOp,
@@ -29,7 +28,7 @@ pub const WindowWorker = struct {
     fifo_head: usize = 0,
     fifo_len: usize = 0,
 
-    // 2. Latest-wins streaming slot (single active mouse stream).
+    // Latest-wins coalescing slot for high-frequency streaming gestures
     streaming_slot: ?struct {
         target: WindowTarget,
         op: StreamingOp,
@@ -52,9 +51,7 @@ pub const WindowWorker = struct {
         self.thread = null;
     }
 
-    /// Bump the global session id so every queued streaming and discrete op
-    /// from previous sessions is silently invalidated. Returns the new id so
-    /// callers can hand out matching targets.
+    // Invalidate all queued operations from previous interaction sessions
     pub fn invalidateSession(self: *WindowWorker) u64 {
         t.AcquireSRWLockExclusive(&self.lock);
         defer t.ReleaseSRWLockExclusive(&self.lock);
@@ -63,7 +60,7 @@ pub const WindowWorker = struct {
         return self.active_session_id;
     }
 
-    /// Reliable FIFO delivery for discrete ops (center, topmost).
+    // Enqueue discrete operation with guaranteed delivery
     pub fn postDiscrete(self: *WindowWorker, target: WindowTarget, op: DiscreteOp) void {
         t.AcquireSRWLockExclusive(&self.lock);
         const full = self.fifo_len == fifo_cap;
@@ -79,7 +76,7 @@ pub const WindowWorker = struct {
         if (full) logger.warn("Worker", "fifo queue full, dropped discrete task", .{});
     }
 
-    /// Latest-wins delivery for high-frequency move/resize streams.
+    // Enqueue latest streaming operation, overriding previous pending frame
     pub fn postStreaming(self: *WindowWorker, target: WindowTarget, op: StreamingOp) void {
         t.AcquireSRWLockExclusive(&self.lock);
         defer t.ReleaseSRWLockExclusive(&self.lock);
@@ -88,7 +85,7 @@ pub const WindowWorker = struct {
     }
 
     fn workerLoop(self: *WindowWorker) void {
-        // Keep geometry application responsive under full CPU load.
+        // Boost worker thread priority for responsive window positioning
         _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
         while (true) {
             t.AcquireSRWLockExclusive(&self.lock);
@@ -102,7 +99,7 @@ pub const WindowWorker = struct {
 
             const current_session = self.active_session_id;
 
-            // Drain FIFO discrete ops first.
+            // Drain FIFO discrete ops first
             if (self.fifo_len > 0) {
                 const task = self.fifo_queue[self.fifo_head];
                 self.fifo_head = (self.fifo_head + 1) % fifo_cap;
@@ -115,7 +112,7 @@ pub const WindowWorker = struct {
                 continue;
             }
 
-            // Consume the streaming coalescing slot.
+            // Consume the streaming coalescing slot
             if (self.streaming_slot) |task| {
                 self.streaming_slot = null;
                 t.ReleaseSRWLockExclusive(&self.lock);
@@ -163,10 +160,7 @@ pub const WindowWorker = struct {
                 );
             },
             .resize => |r| {
-                // Give grid-aware apps (putty, terminals) a chance to
-                // quantize the proposed rect before it lands — same trick
-                // as AltSnap PR #723: win32k marshals the RECT pointer for
-                // WM_SIZING; SMTO_ABORTIFHUNG caps a wedged target at 32ms.
+                // Allow grid-aware windows (terminals) to adjust sizing bounds via WM_SIZING
                 var rc: t.RECT = .{ .left = r.x, .top = r.y, .right = r.x + r.w, .bottom = r.y + r.h };
                 var smto_result: usize = 0;
                 if (r.wmsz != 0 and t.SendMessageTimeoutW(
@@ -177,8 +171,7 @@ pub const WindowWorker = struct {
                     t.SMTO_ABORTIFHUNG,
                     32,
                     &smto_result,
-                ) != 0)
-                {
+                ) != 0) {
                     _ = t.SetWindowPos(
                         hwnd,
                         null,

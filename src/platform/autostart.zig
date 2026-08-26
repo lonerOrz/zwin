@@ -5,6 +5,7 @@ const logger = @import("../infra/logger.zig");
 const RUN_KEY_PATH = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const VALUE_NAME = std.unicode.utf8ToUtf16LeStringLiteral("zwin");
 
+// Manage standard user autostart entry in HKCU\...\Run
 pub const Autostart = struct {
     pub fn setEnabled(enable: bool) void {
         var hkey: t.HKEY = undefined;

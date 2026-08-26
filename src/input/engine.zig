@@ -14,19 +14,9 @@ pub const AltProtocolState = enum {
     alt_held_consumed,
 };
 
-// Intent ring capacity; hooks enqueue, the main message pump drains.
 const intent_cap = 8;
 
-/// Low-level hook driver and Alt input-protocol state machine.
-///
-/// State transition invariants:
-/// 1. neutralizeMenuState() runs on Alt release if and only if
-///    alt_state == .alt_held_consumed.
-/// 2. middle_pending is force-reset on every Alt release.
-/// 3. While paused, all hook events pass straight through untouched.
-///
-/// Hooks never perform Win32 window probing or heavy work: they classify
-/// input into a UserIntent and wake the main thread via WM_APP_INTENT.
+// Low-level hook driver and Alt input-protocol state machine
 pub const InputEngine = struct {
     kb_hook: ?t.HHOOK = null,
     mouse_hook: ?t.HHOOK = null,
@@ -40,7 +30,7 @@ pub const InputEngine = struct {
     notify_hwnd: t.HWND = undefined,
     hinst: ?t.HINSTANCE = null,
 
-    /// Liveness beacon stamped by every WM_MOUSEMOVE the mouse hook sees.
+    // Watchdog timestamp updated on every mouse move
     last_hook_mouse_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     lock: t.SRWLOCK = .{},
@@ -75,9 +65,7 @@ pub const InputEngine = struct {
         InputEngine.global = null;
     }
 
-    /// Watchdog repair path (main thread): LL hooks can be silently dropped
-    /// after sleep/resume or under hook-timeout storms; re-arm with the
-    /// same module handle and callbacks.
+    // Reinstall low-level hooks on watchdog recovery
     pub fn reinstall(self: *InputEngine) void {
         if (self.kb_hook) |kh| _ = t.UnhookWindowsHookEx(kh);
         if (self.mouse_hook) |mh| _ = t.UnhookWindowsHookEx(mh);
@@ -94,6 +82,7 @@ pub const InputEngine = struct {
         return self.alt_state != .idle or (@as(u16, @bitCast(t.GetAsyncKeyState(t.VK_MENU_I32))) & 0x8000) != 0;
     }
 
+    // Send dummy Ctrl keypress to prevent Windows from activating the menu bar on Alt release
     fn neutralizeMenuState() void {
         const KEYEVENTF_KEYUP: u16 = 0x0002;
         const INPUT_KEYBOARD: u32 = 1;
@@ -104,8 +93,7 @@ pub const InputEngine = struct {
         _ = t.SendInput(2, &inputs, @sizeOf(t.INPUT));
     }
 
-    /// Called from hook threads. Never blocks on I/O; drops with a warn
-    /// when the ring is full (main thread stalled longer than 8 intents).
+    // Non-blocking queue for dispatching intents to the main thread
     fn enqueueIntent(self: *InputEngine, intent: UserIntent) void {
         var full = false;
         t.AcquireSRWLockExclusive(&self.lock);
@@ -120,7 +108,7 @@ pub const InputEngine = struct {
         if (full) logger.warn("Hook", "intent queue full, dropped intent", .{});
     }
 
-    /// Pop one pending intent; called from the main thread only.
+    // Pop pending intent on the main thread
     pub fn nextIntent(self: *InputEngine) ?UserIntent {
         t.AcquireSRWLockExclusive(&self.lock);
         defer t.ReleaseSRWLockExclusive(&self.lock);
@@ -143,7 +131,6 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
 
     if (kbd.vkCode == t.VK_MENU or kbd.vkCode == t.VK_LMENU or kbd.vkCode == t.VK_RMENU) {
         if (is_down) {
-            // Key-repeat fires extra downs; never downgrade consumed state.
             if (self.alt_state == .idle) self.alt_state = .alt_held_passthrough;
         } else if (is_up) {
             const was_consumed = self.alt_state == .alt_held_consumed;
@@ -154,9 +141,8 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
         return t.CallNextHookEx(null, nCode, wParam, lParam);
     }
 
+    // Abort active gesture on ESC
     if (is_down and kbd.vkCode == t.VK_ESCAPE and self.gesture.isBusy()) {
-        // Gesture state is owned by the mouse-hook thread; route the abort
-        // through the ring instead of touching it from this thread.
         self.enqueueIntent(.abort_gesture);
         return 1;
     }
@@ -187,20 +173,13 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     const pt: geom.Point = .{ .x = mouse.pt.x, .y = mouse.pt.y };
 
     if (wParam == t.WM_MOUSEMOVE) {
-        // Liveness beacon; stamped before any pause/alt gating so the
-        // watchdog stays truthful while paused too.
         self.last_hook_mouse_ms.store(t.GetTickCount64(), .release);
     }
 
     if (self.isAltDown() and !self.paused.load(.acquire)) {
         switch (wParam) {
             t.WM_LBUTTONDOWN => {
-                // The gesture state machine must start synchronously with the
-                // physical button press: an async intent can be overtaken by
-                // this click's own WM_LBUTTONUP (main thread not scheduled
-                // yet), starting a drag with the button already up — a stuck
-                // ghost-drag. Probing here stays cheap (<30us) and, as a side
-                // effect, clicks on non-actionable surfaces pass through.
+                // Start drag synchronously with button down to avoid mouse-up race conditions
                 if (actionableWindowAt(mouse.pt)) |win| {
                     win.ensureRestored();
                     _ = t.SetForegroundWindow(win.hwnd);
@@ -214,6 +193,7 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
                 }
             },
             t.WM_RBUTTONDOWN => {
+                // Start resize synchronously with button down
                 if (actionableWindowAt(mouse.pt)) |win| {
                     win.ensureRestored();
                     _ = t.SetForegroundWindow(win.hwnd);

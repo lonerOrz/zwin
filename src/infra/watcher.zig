@@ -3,6 +3,7 @@ const t = @import("../platform/win32.zig");
 const Paths = @import("../platform/paths.zig").Paths;
 const logger = @import("logger.zig");
 
+// Directory watcher for hot-reloading configuration
 pub const ConfigWatcher = struct {
     pub const CONFIG_CHANGED_EVENT: u32 = 0x9000;
 
@@ -73,8 +74,7 @@ pub const ConfigWatcher = struct {
                 if (t.WaitForSingleObject(ev, 200) == t.WAIT_OBJECT_0) break;
             }
             if (!self.running.load(.acquire)) {
-                // The kernel still holds &ov/&buf; cancel the pending request
-                // and drain it before this stack frame is destroyed.
+                // Cancel pending I/O and drain result before stack frame is destroyed
                 _ = t.CancelIoEx(h_dir, &ov);
                 var dropped: u32 = 0;
                 _ = t.GetOverlappedResult(h_dir, &ov, &dropped, t.TRUE);

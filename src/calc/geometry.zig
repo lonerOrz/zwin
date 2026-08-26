@@ -39,10 +39,12 @@ pub const Sector = enum {
     bottom_right,
 };
 
+// Map click point to 3x3 sectors; fallback to center on invalid dimensions
 pub fn calculateSector(w: i32, h: i32, rx: i32, ry: i32) Sector {
     if (w <= 0 or h <= 0) return .center;
     const col: i32 = if (rx < @divTrunc(w, 3)) 0 else if (rx >= w - @divTrunc(w, 3)) 2 else 1;
     const row: i32 = if (ry < @divTrunc(h, 3)) 0 else if (ry >= h - @divTrunc(h, 3)) 2 else 1;
+
     return switch (row * 3 + col) {
         0 => .top_left,
         1 => .top,
@@ -57,14 +59,12 @@ pub fn calculateSector(w: i32, h: i32, rx: i32, ry: i32) Sector {
     };
 }
 
+// Center window within work area taking shadow padding into account
 pub fn calculateCenterRect(work_area: Rect, win_bounds: Rect, pad: Padding) Rect {
     const w = win_bounds.width();
     const h = win_bounds.height();
-    const work_w = work_area.width();
-    const work_h = work_area.height();
-
-    const target_x = work_area.left + @divTrunc(work_w - w, 2) - pad.l;
-    const target_y = work_area.top + @divTrunc(work_h - h, 2) - pad.t;
+    const target_x = work_area.left + @divTrunc(work_area.width() - w, 2) - pad.l;
+    const target_y = work_area.top + @divTrunc(work_area.height() - h, 2) - pad.t;
 
     return .{
         .left = target_x,
@@ -74,6 +74,7 @@ pub fn calculateCenterRect(work_area: Rect, win_bounds: Rect, pad: Padding) Rect
     };
 }
 
+// Calculate resized bounds by sector and clamp to minimum dimensions
 pub fn calculateResizedRect(
     start_bounds: Rect,
     delta: Point,
@@ -113,7 +114,7 @@ pub fn calculateResizedRect(
             rc.bottom += delta.y;
         },
         .center => {
-            // AltSnap-style all-directions scaling around the center
+            // Expand in all directions from center
             rc.left -= delta.x;
             rc.right += delta.x;
             rc.top -= delta.y;
@@ -132,6 +133,7 @@ pub fn calculateResizedRect(
             else => rc.right = rc.left + min_w,
         }
     }
+
     if (rc.height() < min_h) {
         switch (sector) {
             .top, .top_left, .top_right => rc.top = rc.bottom - min_h,
@@ -147,6 +149,7 @@ pub fn calculateResizedRect(
     return rc;
 }
 
+// Snap moving window edges to work area within threshold preserving size
 pub fn snapMoveBounds(bounds: Rect, wa: Rect, threshold: i32) Rect {
     var res = bounds;
     const w = bounds.width();
@@ -171,6 +174,7 @@ pub fn snapMoveBounds(bounds: Rect, wa: Rect, threshold: i32) Rect {
     return res;
 }
 
+// Snap resizing window edges to work area based on active sector
 pub fn snapResizeBounds(bounds: Rect, wa: Rect, sector: Sector, threshold: i32) Rect {
     var res = bounds;
 
