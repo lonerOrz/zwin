@@ -480,7 +480,7 @@ pub extern "user32" fn CreatePopupMenu() callconv(.winapi) ?HMENU;
 pub extern "user32" fn DestroyMenu(hMenu: HMENU) callconv(.winapi) BOOL;
 pub extern "user32" fn AppendMenuW(hMenu: HMENU, uFlags: u32, uIDNewItem: usize, lpNewItem: ?[*:0]const u16) callconv(.winapi) BOOL;
 pub extern "user32" fn TrackPopupMenu(hMenu: HMENU, uFlags: u32, x: i32, y: i32, nReserved: i32, hWnd: HWND, prcRect: ?*const RECT) callconv(.winapi) BOOL;
-pub extern "user32" fn LoadIconW(hInstance: ?HINSTANCE, lpIconName: ?[*:0]const u16) callconv(.winapi) ?HICON;
+pub extern "user32" fn LoadIconW(hInstance: ?HINSTANCE, lpIconName: ?[*:0]align(1) const u16) callconv(.winapi) ?HICON;
 
 // Win32 API functions: advapi32.dll
 pub extern "advapi32" fn RegOpenKeyExW(hKey: HKEY, lpSubKey: [*:0]const u16, ulOptions: u32, samDesired: u32, phkResult: *HKEY) callconv(.winapi) i32;

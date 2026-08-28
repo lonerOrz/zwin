@@ -519,7 +519,7 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
         },
         t.WM_TIMER => {
             if (wParam == TIMER_BORDER_REINFORCE) {
-                _ = t.KillTimer(hwnd, TIMER_BORDER_REINFORCE);
+                if (app.msg_win) |mw| mw.killTimer(TIMER_BORDER_REINFORCE);
                 if (t.GetForegroundWindow()) |current_fg| {
                     app.border_mgr.refreshCurrent(current_fg);
                 }

@@ -1,11 +1,8 @@
 const std = @import("std");
 const t = @import("win32.zig");
 
-fn intResource(id: usize) [*:0]const u16 {
-    // ponytail: Win32 LoadIconW accepts resource IDs as unaligned pointer values;
-    // this helper avoids the alignment trap by going through an unaligned pointer first
-    const p = @as(*const u16, @ptrFromInt(id));
-    return @ptrCast(p);
+fn intResource(id: usize) [*:0]align(1) const u16 {
+    return @ptrFromInt(id);
 }
 
 // ==========================================
@@ -30,9 +27,15 @@ pub const MessageWindow = struct {
             0,
             class_name,
             class_name,
-            0, 0, 0, 0,
-            0, null, null,
-            hinst, null,
+            0,
+            0,
+            0,
+            0,
+            0,
+            null,
+            null,
+            hinst,
+            null,
         ) orelse return error.WindowCreationFailed;
 
         return .{ .hwnd = hwnd };
