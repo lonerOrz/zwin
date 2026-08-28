@@ -20,7 +20,6 @@ pub const Paths = struct {
         return toWide(allocator, str_u8);
     }
 
-    // 栈上固定缓冲区的 UTF-8 -> UTF-16 转换，避免小路径分配堆内存
     pub fn toWideFixed(path_u8: []const u8, out_buf: *[t.MAX_PATH:0]u16) ![:0]const u16 {
         const units = std.unicode.calcUtf16LeLen(path_u8) catch return error.InvalidPath;
         if (units >= t.MAX_PATH) return error.PathTooLong;

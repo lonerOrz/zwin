@@ -29,8 +29,7 @@ pub const Window = struct {
         if (@intFromPtr(hwnd) == 0) return false;
 
         var rc: t.RECT = undefined;
-        if (t.GetWindowRect(hwnd, &rc) == 0) return false;
-        if ((rc.right - rc.left) <= 0 or (rc.bottom - rc.top) <= 0) return false;
+        if (t.GetWindowRect(hwnd, &rc) == 0 or (rc.right - rc.left) <= 0 or (rc.bottom - rc.top) <= 0) return false;
 
         const style = t.GetWindowLongPtrW(hwnd, t.GWL_STYLE);
         if ((style & t.WS_CHILD) != 0) return false;

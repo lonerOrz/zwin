@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const t = @import("platform/win32.zig");
 const App = @import("app.zig").App;
+const resources = @import("platform/resources.zig");
 const single_instance_mutex_name = @import("app.zig").single_instance_mutex_name;
 const ConfigStore = @import("infra/config_store.zig").ConfigStore;
 
@@ -47,7 +48,7 @@ pub fn main() !void {
     defer app.deinit();
 
     // Transfer mutex ownership to App for restart and deinit lifecycle management
-    app.single_instance_mutex = mutex;
+    app.mutex = resources.SingleInstanceMutex.adopt(mutex);
 
     try app.start(hinst);
 

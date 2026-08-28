@@ -16,6 +16,7 @@ const GestureStateMachine = @import("input/gesture.zig").GestureStateMachine;
 const InputEngine = @import("input/engine.zig").InputEngine;
 const Autostart = @import("platform/autostart.zig").Autostart;
 const I18n = @import("infra/i18n.zig").I18n;
+const resources = @import("platform/resources.zig");
 
 // Tray menu command IDs
 const CMD_TOGGLE_PAUSE: usize = 1001;
@@ -44,19 +45,18 @@ pub const App = struct {
     gesture: GestureStateMachine,
     hook_engine: InputEngine,
     watcher: ConfigWatcher = .{},
-    main_hwnd: ?t.HWND = null,
-    single_instance_mutex: ?t.HANDLE = null,
-    nid: t.NOTIFYICONDATAW = undefined,
+
+    // RAII platform resources
+    msg_win: ?resources.MessageWindow = null,
+    tray: ?resources.TrayIcon = null,
+    win_hooks: ?resources.WinEventHooks = null,
+    mutex: resources.SingleInstanceMutex = .{},
+
     last_config_write_ms: u64 = 0,
     quitting: bool = false,
     taskbar_created_msg: u32 = 0,
     watchdog_pt: t.POINT = .{ .x = 0, .y = 0 },
     current_session_id: u64 = 0,
-    hicon_enabled: ?t.HICON = null,
-    hicon_disabled: ?t.HICON = null,
-
-    fg_hook: ?t.HWINEVENTHOOK = null,
-    obj_hook: ?t.HWINEVENTHOOK = null,
 
     pub var global: ?*App = null;
 
@@ -65,12 +65,10 @@ pub const App = struct {
         errdefer allocator.destroy(self);
 
         const config = ConfigStore.load(allocator);
-        const logger_inst = Logger.init(allocator, config.log_max_days);
-
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .logger_inst = logger_inst,
+            .logger_inst = Logger.init(allocator, config.log_max_days),
             .worker = .{},
             .border_mgr = undefined,
             .gesture = undefined,
@@ -93,27 +91,33 @@ pub const App = struct {
         _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
 
         self.current_session_id = self.worker.invalidateSession();
-        try self.createMessageWindow(hinst);
+
+        self.msg_win = try resources.MessageWindow.create(hinst, appWndProc);
+        const hwnd = self.msg_win.?.hwnd;
 
         // Register TaskbarCreated and allow UIPI bypass when elevated
         self.taskbar_created_msg = t.RegisterWindowMessageW(std.unicode.utf8ToUtf16LeStringLiteral("TaskbarCreated"));
         if (self.taskbar_created_msg != 0 and self.isAdmin()) {
-            _ = t.ChangeWindowMessageFilterEx(self.main_hwnd.?, self.taskbar_created_msg, t.MSGFLT_ALLOW, null);
+            _ = t.ChangeWindowMessageFilterEx(hwnd, self.taskbar_created_msg, t.MSGFLT_ALLOW, null);
         }
 
         try self.worker.start();
-        try self.hook_engine.install(hinst, self.main_hwnd.?);
-        try self.watcher.start(self.allocator, self.main_hwnd.?);
+        try self.hook_engine.install(hinst, hwnd);
+        try self.watcher.start(self.allocator, hwnd);
 
         // Arm watchdog timer to detect detached hooks
-        _ = t.SetTimer(self.main_hwnd.?, TIMER_REHOOK_WATCHDOG, 5000, null);
+        self.msg_win.?.setTimer(TIMER_REHOOK_WATCHDOG, 5000);
 
         self.syncAutostartState();
 
         // Hook window lifecycle and foreground focus events
-        self.fg_hook = t.SetWinEventHook(t.EVENT_SYSTEM_FOREGROUND, t.EVENT_SYSTEM_MINIMIZEEND, null, winEventCallback, 0, 0, t.WINEVENT_OUTOFCONTEXT);
-        self.obj_hook = t.SetWinEventHook(t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE, null, winEventCallback, 0, 0, t.WINEVENT_OUTOFCONTEXT);
-        self.initTrayIcon(hinst);
+        self.win_hooks = resources.WinEventHooks.install(winEventCallback);
+
+        self.tray = resources.TrayIcon.init(hwnd, hinst);
+        if (!self.tray.?.addToTaskbar()) {
+            logger.err("App", "Shell_NotifyIconW(NIM_ADD) failed gle={d}", .{t.GetLastError()});
+        }
+        self.updateTrayState(self.hook_engine.paused.load(.acquire));
 
         self.refreshActiveBorder();
         logger.info("App", "zwin runtime ready (elevated={})", .{self.isAdmin()});
@@ -121,26 +125,22 @@ pub const App = struct {
 
     pub fn deinit(self: *App) void {
         logger.info("App", "zwin shutting down...", .{});
-        _ = t.Shell_NotifyIconW(t.NIM_DELETE, &self.nid);
 
-        if (self.fg_hook) |h| _ = t.UnhookWinEvent(h);
-        if (self.obj_hook) |h| _ = t.UnhookWinEvent(h);
+        if (self.tray) |*tr| tr.deinit();
+        if (self.win_hooks) |*wh| wh.uninstall();
 
         self.watcher.stop();
         self.hook_engine.uninstall();
         self.worker.stop();
         self.border_mgr.reset();
 
-        if (self.main_hwnd) |hwnd| {
-            _ = t.KillTimer(hwnd, TIMER_BORDER_REINFORCE);
-            _ = t.KillTimer(hwnd, TIMER_REHOOK_WATCHDOG);
-            _ = t.DestroyWindow(hwnd);
+        if (self.msg_win) |*mw| {
+            mw.killTimer(TIMER_BORDER_REINFORCE);
+            mw.killTimer(TIMER_REHOOK_WATCHDOG);
+            mw.destroy();
         }
 
-        if (self.single_instance_mutex) |m| {
-            _ = t.CloseHandle(m);
-            self.single_instance_mutex = null;
-        }
+        self.mutex.release();
 
         Logger.global = null;
         self.logger_inst.deinit();
@@ -153,10 +153,7 @@ pub const App = struct {
         const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
         if (len == 0 or len >= path_buf.len) return;
 
-        if (self.single_instance_mutex) |m| {
-            _ = t.CloseHandle(m);
-            self.single_instance_mutex = null;
-        }
+        self.mutex.release();
 
         const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), path_buf[0..len :0].ptr, null, null, 1);
         if (@intFromPtr(res) > 32) {
@@ -178,11 +175,8 @@ pub const App = struct {
         const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
         if (len == 0 or len >= path_buf.len) return false;
 
-        if (self.single_instance_mutex) |m| {
-            _ = t.CloseHandle(m);
-            self.single_instance_mutex = null;
-        }
-        _ = t.Shell_NotifyIconW(t.NIM_DELETE, &self.nid);
+        self.mutex.release();
+        if (self.tray) |*tr| tr.deinit();
 
         const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("runas"), path_buf[0..len :0].ptr, null, null, 1);
         if (@intFromPtr(res) > 32) {
@@ -193,7 +187,7 @@ pub const App = struct {
 
         logger.warn("App", "elevation cancelled by user, restoring mutex", .{});
         self.restoreMutex();
-        _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
+        if (self.tray) |*tr| _ = tr.addToTaskbar();
         return false;
     }
 
@@ -206,11 +200,8 @@ pub const App = struct {
         const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
         if (len == 0 or len >= path_buf.len) return false;
 
-        if (self.single_instance_mutex) |m| {
-            _ = t.CloseHandle(m);
-            self.single_instance_mutex = null;
-        }
-        _ = t.Shell_NotifyIconW(t.NIM_DELETE, &self.nid);
+        self.mutex.release();
+        if (self.tray) |*tr| tr.deinit();
 
         const exe_u8 = std.unicode.utf16LeToUtf8Alloc(self.allocator, path_buf[0..len]) catch return false;
         defer self.allocator.free(exe_u8);
@@ -227,15 +218,15 @@ pub const App = struct {
 
         logger.warn("App", "de-elevation launch failed, restoring mutex", .{});
         self.restoreMutex();
-        _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
+        if (self.tray) |*tr| _ = tr.addToTaskbar();
         return false;
     }
 
     fn restoreMutex(self: *App) void {
-        self.single_instance_mutex = t.CreateMutexW(null, 1, single_instance_mutex_name);
-        if (self.single_instance_mutex == null) {
+        self.mutex = resources.SingleInstanceMutex.acquire(single_instance_mutex_name) orelse {
             logger.err("App", "mutex re-create failed gle={d}", .{t.GetLastError()});
-        }
+            return;
+        };
     }
 
     // Execute schtasks command silently
@@ -330,8 +321,8 @@ pub const App = struct {
     }
 
     pub fn scheduleBorderReinforce(self: *App) void {
-        if (self.main_hwnd) |hwnd| {
-            _ = t.SetTimer(hwnd, TIMER_BORDER_REINFORCE, 60, null);
+        if (self.msg_win) |*mw| {
+            mw.setTimer(TIMER_BORDER_REINFORCE, 60);
         }
     }
 
@@ -403,68 +394,11 @@ pub const App = struct {
         }
     }
 
-    fn createMessageWindow(self: *App, hinst: ?t.HINSTANCE) !void {
-        const class_name = std.unicode.utf8ToUtf16LeStringLiteral("zwin_MsgWindow");
-        const wnd_class = t.WNDCLASSEXW{
-            .lpfnWndProc = appWndProc,
-            .hInstance = hinst,
-            .lpszClassName = class_name,
-        };
-        _ = t.RegisterClassExW(&wnd_class);
-
-        self.main_hwnd = t.CreateWindowExW(
-            0,
-            class_name,
-            class_name,
-            0,
-            0,
-            0,
-            0,
-            0,
-            null,
-            null,
-            hinst,
-            null,
-        ) orelse return error.WindowCreationFailed;
-    }
-
-    fn intResource(id: usize) [*:0]const u16 {
-        // ponytail: Win32 LoadIconW accepts resource IDs as unaligned pointer values;
-        // this helper avoids the alignment trap by going through an unaligned pointer first
-        const p = @as(*const u16, @ptrFromInt(id));
-        return @ptrCast(p);
-    }
-
-    fn initTrayIcon(self: *App, hinst: ?t.HINSTANCE) void {
-        const hwnd = self.main_hwnd orelse return;
-        self.hicon_enabled = t.LoadIconW(hinst, intResource(3)) orelse t.LoadIconW(null, intResource(32512));
-        self.hicon_disabled = t.LoadIconW(hinst, intResource(2)) orelse t.LoadIconW(null, intResource(32515));
-
-        const is_paused = self.hook_engine.paused.load(.acquire);
-        self.nid = .{
-            .hWnd = hwnd,
-            .uID = 1,
-            .uFlags = t.NIF_MESSAGE | t.NIF_ICON | t.NIF_TIP,
-            .uCallbackMessage = t.WM_TRAY,
-            .hIcon = if (is_paused) self.hicon_disabled else self.hicon_enabled,
-        };
-
-        _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
-        self.updateTrayState(is_paused);
-    }
-
     pub fn updateTrayState(self: *App, is_paused: bool) void {
         const strings = I18n.getStrings(self.config.language);
         const tip = if (is_paused) strings.tray_paused else strings.tray_running;
 
-        var len: usize = 0;
-        while (len < self.nid.szTip.len - 1 and tip[len] != 0) : (len += 1) {}
-        @memcpy(self.nid.szTip[0..len], tip[0..len]);
-        self.nid.szTip[len] = 0;
-
-        self.nid.hIcon = if (is_paused) self.hicon_disabled else self.hicon_enabled;
-        self.nid.uFlags = t.NIF_ICON | t.NIF_TIP;
-        _ = t.Shell_NotifyIconW(t.NIM_MODIFY, &self.nid);
+        if (self.tray) |*tr| tr.update(is_paused, tip);
     }
 };
 
@@ -492,7 +426,7 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
 
     // Re-add tray icon if Explorer restarts
     if (app.taskbar_created_msg != 0 and msg == app.taskbar_created_msg) {
-        _ = t.Shell_NotifyIconW(t.NIM_ADD, &app.nid);
+        if (app.tray) |*tr| _ = tr.addToTaskbar();
         app.updateTrayState(app.hook_engine.paused.load(.acquire));
         return 0;
     }
