@@ -51,12 +51,19 @@ pub const WindowWorker = struct {
         self.thread = null;
     }
 
-    // Invalidate all queued operations from previous interaction sessions
+    // Increment session and clear streaming slot — call at the end of a gesture
     pub fn invalidateSession(self: *WindowWorker) u64 {
         t.AcquireSRWLockExclusive(&self.lock);
         defer t.ReleaseSRWLockExclusive(&self.lock);
         self.active_session_id +%= 1;
         self.streaming_slot = null;
+        return self.active_session_id;
+    }
+
+    // Read-only snapshot of current session — safe to call from any context, no side effects
+    pub fn fetchSessionId(self: *WindowWorker) u64 {
+        t.AcquireSRWLockExclusive(&self.lock);
+        defer t.ReleaseSRWLockExclusive(&self.lock);
         return self.active_session_id;
     }
 

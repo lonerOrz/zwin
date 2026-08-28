@@ -161,7 +161,7 @@ pub const Window = struct {
     }
 
     pub fn close(self: Window) void {
-        _ = t.PostMessageW(self.hwnd, t.WM_SYSCOMMAND, 0xF060, 0); // SC_CLOSE
+        _ = t.PostMessageW(self.hwnd, t.WM_CLOSE, 0, 0);
     }
 
     pub fn minimize(self: Window) void {

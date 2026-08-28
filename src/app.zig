@@ -56,7 +56,6 @@ pub const App = struct {
     quitting: bool = false,
     taskbar_created_msg: u32 = 0,
     watchdog_pt: t.POINT = .{ .x = 0, .y = 0 },
-    current_session_id: u64 = 0,
 
     pub var global: ?*App = null;
 
@@ -90,7 +89,7 @@ pub const App = struct {
         _ = t.SetPriorityClass(t.GetCurrentProcess(), t.HIGH_PRIORITY_CLASS);
         _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
 
-        self.current_session_id = self.worker.invalidateSession();
+        _ = self.worker.invalidateSession();
 
         self.msg_win = try resources.MessageWindow.create(hinst, appWndProc);
         const hwnd = self.msg_win.?.hwnd;
@@ -378,7 +377,7 @@ pub const App = struct {
         const top = Window.getTrueTopLevel(raw_fg) orelse return null;
         const win = Window.init(top);
         if (win.isExclusiveFullScreen()) return null;
-        return .{ .hwnd = top, .session_id = self.current_session_id };
+        return .{ .hwnd = top, .session_id = self.worker.fetchSessionId() };
     }
 
     fn resolveTargetAtPoint(self: *App, pt: geom.Point) ?WindowTarget {
@@ -386,7 +385,7 @@ pub const App = struct {
         const top = Window.getTrueTopLevel(raw_hwnd) orelse return null;
         const win = Window.init(top);
         if (win.isExclusiveFullScreen()) return null;
-        return .{ .hwnd = top, .session_id = self.current_session_id };
+        return .{ .hwnd = top, .session_id = self.worker.fetchSessionId() };
     }
 
     fn refreshActiveBorder(self: *App) void {
