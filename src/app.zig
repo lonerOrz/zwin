@@ -357,9 +357,16 @@ pub const App = struct {
                 const ex_style = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
                 const is_topmost = (ex_style & t.WS_EX_TOPMOST) != 0;
                 const will_topmost = !is_topmost;
-                self.worker.postDiscrete(target, .{
-                    .set_topmost = .{ .is_topmost = will_topmost },
-                });
+                // Apply topmost immediately on main thread — avoids worker-thread Z-order race
+                _ = t.SetWindowPos(
+                    target.hwnd,
+                    if (will_topmost) t.HWND_TOPMOST else t.HWND_NOTOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOACTIVATE,
+                );
                 self.osd.showTopmost(will_topmost, self.config.language);
             },
             .close_active_window => {
@@ -568,7 +575,6 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
             while (app.hook_engine.nextIntent()) |intent| {
                 app.handleIntent(intent);
             }
-            // 每次消费完毕后，在主线程安全上报可能发生的丢弃情况
             app.hook_engine.reportDroppedIntents();
         },
         else => return t.DefWindowProcW(hwnd, msg, wParam, lParam),

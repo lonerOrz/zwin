@@ -79,6 +79,11 @@ pub const GestureStateMachine = struct {
     worker: *WindowWorker,
     config: *const Config,
 
+    // OSD size-threshold throttle: only redraw when dimensions change by ≥2px.
+    // Eliminates per-frame GDI calls during high-rate mouse movement (500–1000 Hz).
+    last_osd_w: i32 = 0,
+    last_osd_h: i32 = 0,
+
     pub fn init(worker: *WindowWorker, config: *const Config) GestureStateMachine {
         return .{ .worker = worker, .config = config };
     }
@@ -182,8 +187,15 @@ pub const GestureStateMachine = struct {
                 const width = rc.width();
                 const height = rc.height();
 
-                if (app_ptr) |app| {
-                    app.osd.showResize(current_pt, width, height);
+                // Throttle OSD updates: only redraw when size changes by ≥2px
+                const size_changed = (@abs(width - self.last_osd_w) >= 2) or
+                    (@abs(height - self.last_osd_h) >= 2);
+                if (size_changed) {
+                    if (app_ptr) |app| {
+                        self.last_osd_w = width;
+                        self.last_osd_h = height;
+                        app.osd.showResize(current_pt, width, height);
+                    }
                 }
 
                 self.worker.postStreaming(r.target, .{ .resize = .{

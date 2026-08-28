@@ -287,6 +287,7 @@ pub const WS_EX_LAYERED: isize = 0x00080000;
 pub const WS_EX_TRANSPARENT: isize = 0x0020000;
 pub const WS_EX_NOACTIVATE: isize = 0x08000000;
 pub const LWA_ALPHA: u32 = 0x00000002;
+pub const LWA_COLORKEY: u32 = 0x00000001;
 
 pub const GA_ROOT: u32 = 2;
 pub const GA_ROOTOWNER: u32 = 3;
@@ -294,10 +295,13 @@ pub const GA_ROOTOWNER: u32 = 3;
 // Window placement and state
 pub const SWP_NOSIZE: u32 = 0x0001;
 pub const SWP_NOMOVE: u32 = 0x0002;
+pub const SWP_NOREDRAW: u32 = 0x0008;
 pub const SWP_NOZORDER: u32 = 0x0004;
 pub const SWP_NOACTIVATE: u32 = 0x0010;
 pub const SWP_SHOWWINDOW: u32 = 0x0040;
 pub const SWP_FRAMECHANGED: u32 = 0x0020;
+pub const SWP_NOSENDCHANGING: u32 = 0x0400;
+pub const SWP_DEFERERASE: u32 = 0x2000;
 pub const SWP_NOCOPYBITS: u32 = 0x0100;
 pub const SWP_NOOWNERZORDER: u32 = 0x0200;
 
@@ -322,6 +326,21 @@ pub const WMSZ_BOTTOMRIGHT: usize = 8;
 pub const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 pub const DWMWA_CLOAKED: u32 = 14;
 pub const DWMWA_BORDER_COLOR: u32 = 34;
+pub const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+pub const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+pub const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
+
+// DWM corner preference values
+pub const DWMWCP_DEFAULT: u32 = 0;
+pub const DWMWCP_DONOTROUND: u32 = 1;
+pub const DWMWCP_ROUND: u32 = 2;
+pub const DWMWCP_ROUNDSMALL: u32 = 3;
+
+// DWM system backdrop types
+pub const DWMSBT_DISABLE: u32 = 0;
+pub const DWMSBT_MAINWINDOW: u32 = 1;
+pub const DWMSBT_TRANSIENTWINDOW: u32 = 2;
+pub const DWMSBT_TABBEDWINDOW: u32 = 3;
 
 // Tray and menu flags
 pub const NIM_ADD: u32 = 0x00000000;
@@ -353,6 +372,7 @@ pub const EVENT_SYSTEM_MINIMIZEEND: u32 = 0x0017;
 pub const EVENT_OBJECT_DESTROY: u32 = 0x8001;
 pub const EVENT_OBJECT_SHOW: u32 = 0x8002;
 pub const EVENT_OBJECT_HIDE: u32 = 0x8003;
+pub const EVENT_OBJECT_LOCATIONCHANGE: u32 = 0x800B;
 pub const OBJID_WINDOW: i32 = 0;
 
 // Process, monitor and security constants
@@ -512,6 +532,8 @@ pub const IDC_SIZENS: usize = 32645;
 // Win32 API functions: dwmapi.dll
 pub extern "dwmapi" fn DwmGetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
 pub extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
+// Win32 API functions: user32.dll — DPI awareness
+pub extern "user32" fn SetProcessDpiAwarenessContext(value: isize) callconv(.winapi) BOOL;
 
 // Win32 API functions: user32.dll — cursor
 pub extern "user32" fn SetCursor(hCursor: ?*anyopaque) callconv(.winapi) ?*anyopaque;
@@ -523,6 +545,7 @@ pub const HBRUSH = *opaque {};
 pub const HPEN = *opaque {};
 
 pub const TRANSPARENT: i32 = 1;
+pub const DT_LEFT: u32 = 0x00000000;
 pub const DT_CENTER: u32 = 0x00000001;
 pub const DT_VCENTER: u32 = 0x00000004;
 pub const DT_SINGLELINE: u32 = 0x00000020;
@@ -548,6 +571,7 @@ pub extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.w
 pub extern "user32" fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.winapi) BOOL;
 pub extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.winapi) BOOL;
 pub extern "user32" fn DrawTextW(hdc: HDC, lpchText: [*]const u16, cchText: i32, lprc: *RECT, format: u32) callconv(.winapi) i32;
+pub extern "user32" fn FillRect(hdc: HDC, lprc: *const RECT, hbr: HBRUSH) callconv(.winapi) i32;
 
 // PAINTSTRUCT layout for BeginPaint/EndPaint
 pub const PAINTSTRUCT = extern struct {

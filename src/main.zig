@@ -7,6 +7,11 @@ const single_instance_mutex_name = @import("app.zig").single_instance_mutex_name
 const ConfigStore = @import("infra/config_store.zig").ConfigStore;
 
 pub fn main() !void {
+    // Declare Per-Monitor V2 DPI awareness before any window/GDI calls
+    // to prevent DWM from applying blurry upscaling and coordinate drift
+    const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
+    _ = t.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     var gpa = if (builtin.mode == .Debug) std.heap.DebugAllocator(.{}){} else {};
     defer if (builtin.mode == .Debug) {
         _ = gpa.deinit();

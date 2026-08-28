@@ -5,9 +5,6 @@ fn intResource(id: usize) [*:0]align(1) const u16 {
     return @ptrFromInt(id);
 }
 
-// ==========================================
-// 1. 消息窗口封装（纯平台能力，解耦回调）
-// ==========================================
 pub const MessageWindow = struct {
     hwnd: t.HWND,
 
@@ -54,9 +51,6 @@ pub const MessageWindow = struct {
     }
 };
 
-// ==========================================
-// 2. 托盘图标封装（支持动态更新与重建）
-// ==========================================
 pub const TrayIcon = struct {
     nid: t.NOTIFYICONDATAW,
     hicon_enabled: ?t.HICON,
@@ -99,33 +93,32 @@ pub const TrayIcon = struct {
     }
 };
 
-// ==========================================
-// 3. 事件钩子封装（显式传入回调）
-// ==========================================
 pub const WinEventHooks = struct {
     pub const CallbackFn = fn (t.HWINEVENTHOOK, u32, t.HWND, i32, i32, u32, u32) callconv(.winapi) void;
 
     fg_hook: ?t.HWINEVENTHOOK = null,
+    loc_hook: ?t.HWINEVENTHOOK = null,
     obj_hook: ?t.HWINEVENTHOOK = null,
 
     pub fn install(callback: *const CallbackFn) WinEventHooks {
         return .{
             .fg_hook = t.SetWinEventHook(t.EVENT_SYSTEM_FOREGROUND, t.EVENT_SYSTEM_MINIMIZEEND, null, callback, 0, 0, t.WINEVENT_OUTOFCONTEXT),
+            // Track location changes to refresh topmost badge/highlight when windows move
+            .loc_hook = t.SetWinEventHook(t.EVENT_OBJECT_LOCATIONCHANGE, t.EVENT_OBJECT_LOCATIONCHANGE, null, callback, 0, 0, t.WINEVENT_OUTOFCONTEXT),
             .obj_hook = t.SetWinEventHook(t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE, null, callback, 0, 0, t.WINEVENT_OUTOFCONTEXT),
         };
     }
 
     pub fn uninstall(self: *WinEventHooks) void {
         if (self.fg_hook) |h| _ = t.UnhookWinEvent(h);
+        if (self.loc_hook) |h| _ = t.UnhookWinEvent(h);
         if (self.obj_hook) |h| _ = t.UnhookWinEvent(h);
         self.fg_hook = null;
+        self.loc_hook = null;
         self.obj_hook = null;
     }
 };
 
-// ==========================================
-// 4. 单实例互斥体封装（支持所有权转移与重建）
-// ==========================================
 pub const SingleInstanceMutex = struct {
     handle: ?t.HANDLE = null,
 
