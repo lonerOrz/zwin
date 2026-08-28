@@ -126,6 +126,8 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         logger.info("App", "zwin shutting down...", .{});
 
+        self.hook_engine.reportDroppedIntents();
+
         if (self.tray) |*tr| tr.deinit();
         if (self.win_hooks) |*wh| wh.uninstall();
 
@@ -547,6 +549,8 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
             while (app.hook_engine.nextIntent()) |intent| {
                 app.handleIntent(intent);
             }
+            // 每次消费完毕后，在主线程安全上报可能发生的丢弃情况
+            app.hook_engine.reportDroppedIntents();
         },
         else => return t.DefWindowProcW(hwnd, msg, wParam, lParam),
     }

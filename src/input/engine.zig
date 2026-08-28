@@ -14,7 +14,9 @@ pub const AltProtocolState = enum {
     alt_held_consumed,
 };
 
-const intent_cap = 8;
+// 容量必须是 2 的幂（16），以便使用位运算替代取模
+const intent_cap: usize = 16;
+const intent_mask: usize = intent_cap - 1;
 
 pub const MouseButton = enum { left, right };
 
@@ -43,10 +45,14 @@ pub const InputEngine = struct {
     // Watchdog timestamp updated on every mouse move
     last_hook_mouse_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
-    lock: t.SRWLOCK = .{},
+    // SPSC (单生产者单消费者) 无锁环形缓冲区
+    // 消费顺序：先 load tail(acquire) 再 load head(relaxed)，确保看到 producer 的 release 之后的所有数据写
+    head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     intents: [intent_cap]UserIntent = undefined,
-    intent_head: usize = 0,
-    intent_len: usize = 0,
+
+    // 原子丢弃计数：不在 Hook 回调中打日志，避免 I/O 阻塞触发 LowLevelHooksTimeout
+    dropped_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     drag_threshold: i32 = 4,
 
@@ -127,30 +133,52 @@ pub const InputEngine = struct {
         _ = t.SendInput(2, &inputs, @sizeOf(t.INPUT));
     }
 
-    // Non-blocking queue for dispatching intents to the main thread
+    // ==========================================
+    // 生产者 (Hook 回调调用，保证绝对无锁、无阻塞)
+    // ==========================================
     fn enqueueIntent(self: *InputEngine, intent: UserIntent) void {
-        var full = false;
-        t.AcquireSRWLockExclusive(&self.lock);
-        if (self.intent_len < intent_cap) {
-            self.intents[(self.intent_head + self.intent_len) % intent_cap] = intent;
-            self.intent_len += 1;
-        } else {
-            full = true;
+        const current_tail = self.tail.load(.unordered);
+        const next_tail = (current_tail + 1) & intent_mask;
+
+        // 先 load tail(acquire)，再 load head(relaxed)
+        // ponytail: 必须保证 acquire 在 head 之前，否则可能看到 stale head
+        // 导致漏读 producer 已写入的数据
+        const current_head = self.head.load(.acquire);
+        if (next_tail == current_head) {
+            _ = self.dropped_count.fetchAdd(1, .monotonic);
+            return;
         }
-        t.ReleaseSRWLockExclusive(&self.lock);
+
+        self.intents[current_tail] = intent;
+        self.tail.store(next_tail, .release);
         _ = t.PostMessageW(self.notify_hwnd, t.WM_APP_INTENT, 0, 0);
-        if (full) logger.warn("Hook", "intent queue full, dropped intent", .{});
     }
 
-    // Pop pending intent on the main thread
+    // ==========================================
+    // 消费者 (主线程消息循环调用)
+    // ==========================================
     pub fn nextIntent(self: *InputEngine) ?UserIntent {
-        t.AcquireSRWLockExclusive(&self.lock);
-        defer t.ReleaseSRWLockExclusive(&self.lock);
-        if (self.intent_len == 0) return null;
-        const intent = self.intents[self.intent_head];
-        self.intent_head = (self.intent_head + 1) % intent_cap;
-        self.intent_len -= 1;
+        // ponytail: 先 load tail(acquire) 再 load head(relaxed)
+        // 确保同步到 producer 的 release store，从而看到其写入的数据
+        const current_tail = self.tail.load(.acquire);
+        const current_head = self.head.load(.unordered);
+
+        if (current_head == current_tail) {
+            return null;
+        }
+
+        const intent = self.intents[current_head];
+        const next_head = (current_head + 1) & intent_mask;
+        self.head.store(next_head, .release);
         return intent;
+    }
+
+    // 在主线程中安全地汇报丢弃情况
+    pub fn reportDroppedIntents(self: *InputEngine) void {
+        const count = self.dropped_count.swap(0, .monotonic);
+        if (count > 0) {
+            logger.warn("Hook", "dropped {d} intents due to full lock-free queue", .{count});
+        }
     }
 };
 
