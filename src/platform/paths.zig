@@ -14,7 +14,13 @@ pub const Paths = struct {
         return std.unicode.utf8ToUtf16LeAllocZ(allocator, path_u8);
     }
 
-    // Stack-allocated UTF-8 to null-terminated UTF-16 conversion with exact bounds check
+    pub fn allocPrintWide(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u16 {
+        const str_u8 = try std.fmt.allocPrint(allocator, fmt, args);
+        defer allocator.free(str_u8);
+        return toWide(allocator, str_u8);
+    }
+
+    // 栈上固定缓冲区的 UTF-8 -> UTF-16 转换，避免小路径分配堆内存
     pub fn toWideFixed(path_u8: []const u8, out_buf: *[t.MAX_PATH:0]u16) ![:0]const u16 {
         const units = std.unicode.calcUtf16LeLen(path_u8) catch return error.InvalidPath;
         if (units >= t.MAX_PATH) return error.PathTooLong;
@@ -28,10 +34,7 @@ pub const Paths = struct {
         const wide = toWideFixed(path_u8, &buf) catch return;
         const n = wide.len;
 
-        var i: usize = 0;
-        if (n >= 3 and buf[1] == ':' and buf[2] == '\\') {
-            i = 3;
-        }
+        var i: usize = if (n >= 3 and buf[1] == ':' and buf[2] == '\\') 3 else 0;
         while (i < n) : (i += 1) {
             if (buf[i] == '\\' and i > 0) {
                 buf[i] = 0;
@@ -43,16 +46,15 @@ pub const Paths = struct {
     }
 
     pub fn openAppend(path_u8: []const u8) !t.HANDLE {
-        var wide_buf: [t.MAX_PATH:0]u16 = undefined;
-        const wide = try toWideFixed(path_u8, &wide_buf);
+        var buf: [t.MAX_PATH:0]u16 = undefined;
+        const wide = try toWideFixed(path_u8, &buf);
         const h = t.CreateFileW(wide.ptr, t.FILE_APPEND_DATA, t.FILE_SHARE_READ, null, t.OPEN_ALWAYS, t.FILE_ATTRIBUTE_NORMAL, null);
-        if (h == t.INVALID_HANDLE_VALUE) return error.OpenFailed;
-        return h;
+        return if (h == t.INVALID_HANDLE_VALUE) error.OpenFailed else h;
     }
 
     pub fn openRead(path_u8: []const u8) !t.HANDLE {
-        var wide_buf: [t.MAX_PATH:0]u16 = undefined;
-        const wide = try toWideFixed(path_u8, &wide_buf);
+        var buf: [t.MAX_PATH:0]u16 = undefined;
+        const wide = try toWideFixed(path_u8, &buf);
         const h = t.CreateFileW(wide.ptr, t.GENERIC_READ, t.FILE_SHARE_READ | t.FILE_SHARE_WRITE, null, t.OPEN_EXISTING, t.FILE_ATTRIBUTE_NORMAL, null);
         if (h == t.INVALID_HANDLE_VALUE) {
             return switch (t.GetLastError()) {
@@ -65,8 +67,8 @@ pub const Paths = struct {
     }
 
     pub fn writeFile(path_u8: []const u8, content: []const u8) !void {
-        var wide_buf: [t.MAX_PATH:0]u16 = undefined;
-        const wide = try toWideFixed(path_u8, &wide_buf);
+        var buf: [t.MAX_PATH:0]u16 = undefined;
+        const wide = try toWideFixed(path_u8, &buf);
         const h = t.CreateFileW(wide.ptr, t.GENERIC_WRITE, t.FILE_SHARE_READ, null, t.CREATE_ALWAYS, t.FILE_ATTRIBUTE_NORMAL, null);
         if (h == t.INVALID_HANDLE_VALUE) return error.CreateFailed;
         defer _ = t.CloseHandle(h);
@@ -101,20 +103,14 @@ pub const Paths = struct {
             if (t.ReadFile(h, buf[total..].ptr, @intCast(cap - total), &read, null) == 0 or read == 0) break;
             total += read;
         }
-        if (total == 0) {
-            allocator.free(buf);
-            return allocator.alloc(u8, 0);
-        }
-        return allocator.realloc(buf, total) catch buf[0..total];
+        return if (total == 0) allocator.realloc(buf, 0) catch buf[0..0] else allocator.realloc(buf, total) catch buf[0..total];
     }
 
     pub fn deleteOldFiles(allocator: std.mem.Allocator, dir_u8: []const u8, comptime ascii_prefix: []const u8, comptime ascii_suffix: []const u8, max_days: u32) void {
         const prefix = std.unicode.utf8ToUtf16LeStringLiteral(ascii_prefix);
         const suffix = std.unicode.utf8ToUtf16LeStringLiteral(ascii_suffix);
 
-        const pattern = std.fmt.allocPrint(allocator, "{s}\\*", .{dir_u8}) catch return;
-        defer allocator.free(pattern);
-        const pattern_wide = toWide(allocator, pattern) catch return;
+        const pattern_wide = allocPrintWide(allocator, "{s}\\*", .{dir_u8}) catch return;
         defer allocator.free(pattern_wide);
 
         const dir_wide = toWide(allocator, dir_u8) catch return;
@@ -134,18 +130,16 @@ pub const Paths = struct {
             const name = fd.cFileName[0..name_len];
             if (name.len > prefix.len + suffix.len and
                 std.mem.startsWith(u16, name, prefix) and
-                std.mem.endsWith(u16, name, suffix))
+                std.mem.endsWith(u16, name, suffix) and
+                (now - fd.ftLastWriteTime.toUnixSeconds()) > max_diff)
             {
-                const age = now - fd.ftLastWriteTime.toUnixSeconds();
-                if (age > max_diff) {
-                    const full_len = dir_wide.len + 1 + name.len;
-                    if (full_len < full_buf.len) {
-                        @memcpy(full_buf[0..dir_wide.len], dir_wide);
-                        full_buf[dir_wide.len] = '\\';
-                        @memcpy(full_buf[dir_wide.len + 1 ..][0..name.len], name);
-                        full_buf[full_len] = 0;
-                        _ = t.DeleteFileW(@ptrCast(&full_buf));
-                    }
+                const full_len = dir_wide.len + 1 + name.len;
+                if (full_len < full_buf.len) {
+                    @memcpy(full_buf[0..dir_wide.len], dir_wide);
+                    full_buf[dir_wide.len] = '\\';
+                    @memcpy(full_buf[dir_wide.len + 1 ..][0..name.len], name);
+                    full_buf[full_len] = 0;
+                    _ = t.DeleteFileW(@ptrCast(&full_buf));
                 }
             }
             if (t.FindNextFileW(handle, &fd) == 0) break;
@@ -159,6 +153,7 @@ fn envDir(allocator: std.mem.Allocator, comptime env_var: [:0]const u8, comptime
     if (n == 0 or n > wide_buf.len) return error.CannotResolveDir;
 
     const base = try std.unicode.utf16LeToUtf8Alloc(allocator, wide_buf[0..n]);
+    defer allocator.free(base);
     return std.fmt.allocPrint(allocator, "{s}\\{s}", .{ base, sub_path });
 }
 
@@ -170,19 +165,14 @@ test "toWideFixed stack conversion contract" {
     try std.testing.expectEqual(@as(u16, 'C'), wide[0]);
     try std.testing.expectEqual(@as(u16, 0), buf[wide.len]);
 
-    // Exact MAX_PATH - 1 capacity fit
     const max_ok = "a" ** (t.MAX_PATH - 1);
     const wide_max = try Paths.toWideFixed(max_ok, &buf);
     try std.testing.expectEqual(t.MAX_PATH - 1, wide_max.len);
 
-    // Overflow beyond MAX_PATH
     try std.testing.expectError(error.PathTooLong, Paths.toWideFixed("a" ** t.MAX_PATH, &buf));
     try std.testing.expectError(error.PathTooLong, Paths.toWideFixed("a" ** 400, &buf));
 
-    // Multibyte UTF-8 conversion to fewer UTF-16 code units
     const wide_cjk = try Paths.toWideFixed("中" ** 100, &buf);
     try std.testing.expectEqual(@as(usize, 100), wide_cjk.len);
-
-    // Invalid UTF-8 error handling
     try std.testing.expectError(error.InvalidPath, Paths.toWideFixed("\xff\xfe bad", &buf));
 }

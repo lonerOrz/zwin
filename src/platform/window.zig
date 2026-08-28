@@ -11,15 +11,9 @@ pub const Window = struct {
 
     // Resolve actionable top-level window, filtering tool windows, shell classes, and cloaked windows
     pub fn getTrueTopLevel(hwnd: t.HWND) ?t.HWND {
-        var curr = hwnd;
-        if (@intFromPtr(curr) == 0) return null;
+        if (@intFromPtr(hwnd) == 0) return null;
 
-        if (t.GetAncestor(curr, t.GA_ROOTOWNER)) |root_owner| {
-            curr = root_owner;
-        } else if (t.GetAncestor(curr, t.GA_ROOT)) |root| {
-            curr = root;
-        }
-
+        const curr = if (t.GetAncestor(hwnd, t.GA_ROOTOWNER)) |ro| ro else (t.GetAncestor(hwnd, t.GA_ROOT) orelse hwnd);
         if (isManageableTopLevel(curr) and !isCloaked(curr)) return curr;
         return null;
     }
@@ -27,10 +21,7 @@ pub const Window = struct {
     // Check if window is cloaked (e.g. on another virtual desktop or suspended UWP)
     fn isCloaked(hwnd: t.HWND) bool {
         var cloaked: u32 = 0;
-        if (t.DwmGetWindowAttribute(hwnd, t.DWMWA_CLOAKED, &cloaked, @sizeOf(u32)) == 0) {
-            return cloaked != 0;
-        }
-        return false;
+        return t.DwmGetWindowAttribute(hwnd, t.DWMWA_CLOAKED, &cloaked, @sizeOf(u32)) == 0 and cloaked != 0;
     }
 
     // Filter out child windows, unlisted tool windows, 0-size ghost windows, and shell system classes
@@ -45,9 +36,7 @@ pub const Window = struct {
         if ((style & t.WS_CHILD) != 0) return false;
 
         const ex_style = t.GetWindowLongPtrW(hwnd, t.GWL_EXSTYLE);
-        if ((ex_style & t.WS_EX_TOOLWINDOW) != 0 and (ex_style & t.WS_EX_APPWINDOW) == 0) {
-            return false;
-        }
+        if ((ex_style & t.WS_EX_TOOLWINDOW) != 0 and (ex_style & t.WS_EX_APPWINDOW) == 0) return false;
 
         var class_name_buf: [64]u16 = undefined;
         const len = t.GetClassNameW(hwnd, &class_name_buf, class_name_buf.len);
@@ -173,8 +162,7 @@ pub const Window = struct {
     }
 
     pub fn close(self: Window) void {
-        const SC_CLOSE: usize = 0xF060;
-        _ = t.PostMessageW(self.hwnd, t.WM_SYSCOMMAND, SC_CLOSE, 0);
+        _ = t.PostMessageW(self.hwnd, t.WM_SYSCOMMAND, 0xF060, 0); // SC_CLOSE
     }
 
     pub fn minimize(self: Window) void {

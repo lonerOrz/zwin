@@ -153,17 +153,16 @@ pub const App = struct {
         const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
         if (len == 0 or len >= path_buf.len) return;
 
-        // Release mutex before spawning new process
         if (self.single_instance_mutex) |m| {
             _ = t.CloseHandle(m);
             self.single_instance_mutex = null;
         }
 
         const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), path_buf[0..len :0].ptr, null, null, 1);
-        if (@intFromPtr(res) <= 32) return;
-
-        self.quitting = true;
-        _ = t.PostQuitMessage(0);
+        if (@intFromPtr(res) > 32) {
+            self.quitting = true;
+            _ = t.PostQuitMessage(0);
+        }
     }
 
     pub fn isAdmin(_: *const App) bool {
@@ -213,23 +212,10 @@ pub const App = struct {
         }
         _ = t.Shell_NotifyIconW(t.NIM_DELETE, &self.nid);
 
-        const exe_u8 = std.unicode.utf16LeToUtf8Alloc(self.allocator, path_buf[0..len]) catch {
-            self.restoreMutex();
-            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
-            return false;
-        };
+        const exe_u8 = std.unicode.utf16LeToUtf8Alloc(self.allocator, path_buf[0..len]) catch return false;
         defer self.allocator.free(exe_u8);
-        const params_u8 = std.fmt.allocPrint(self.allocator, "/trustlevel:0x20000 \"{s}\"", .{exe_u8}) catch {
-            self.restoreMutex();
-            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
-            return false;
-        };
-        defer self.allocator.free(params_u8);
-        const params_w = std.unicode.utf8ToUtf16LeAllocZ(self.allocator, params_u8) catch {
-            self.restoreMutex();
-            _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
-            return false;
-        };
+
+        const params_w = Paths.allocPrintWide(self.allocator, "/trustlevel:0x20000 \"{s}\"", .{exe_u8}) catch return false;
         defer self.allocator.free(params_w);
 
         const res = t.ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), std.unicode.utf8ToUtf16LeStringLiteral("runas.exe"), params_w.ptr, null, 0);
@@ -254,9 +240,7 @@ pub const App = struct {
 
     // Execute schtasks command silently
     fn runSchtasks(self: *App, args_u8: []const u8) bool {
-        const cmd_u8 = std.fmt.allocPrint(self.allocator, "schtasks.exe {s}", .{args_u8}) catch return false;
-        defer self.allocator.free(cmd_u8);
-        const cmd_wide = std.unicode.utf8ToUtf16LeAllocZ(self.allocator, cmd_u8) catch return false;
+        const cmd_wide = Paths.allocPrintWide(self.allocator, "schtasks.exe {s}", .{args_u8}) catch return false;
         defer self.allocator.free(cmd_wide);
 
         var si: t.STARTUPINFOW = .{ .cb = @sizeOf(t.STARTUPINFOW) };
@@ -329,10 +313,6 @@ pub const App = struct {
 
         if (self.config.enable_autostart != prev_autostart or self.config.enable_elevated != prev_elevated) {
             self.syncAutostartState();
-        }
-
-        if (self.config.enable_elevated != self.isAdmin()) {
-            logger.info("App", "elevation preference differs from token; toggle via tray menu to apply", .{});
         }
 
         self.updateTrayState(self.hook_engine.paused.load(.acquire));
@@ -448,10 +428,11 @@ pub const App = struct {
         ) orelse return error.WindowCreationFailed;
     }
 
-    fn intResource(id: usize) ?[*:0]const u16 {
-        var v = id;
-        _ = &v;
-        return @ptrFromInt(v);
+    fn intResource(id: usize) [*:0]const u16 {
+        // ponytail: Win32 LoadIconW accepts resource IDs as unaligned pointer values;
+        // this helper avoids the alignment trap by going through an unaligned pointer first
+        const p = @as(*const u16, @ptrFromInt(id));
+        return @ptrCast(p);
     }
 
     fn initTrayIcon(self: *App, hinst: ?t.HINSTANCE) void {
@@ -468,12 +449,7 @@ pub const App = struct {
             .hIcon = if (is_paused) self.hicon_disabled else self.hicon_enabled,
         };
 
-        const ok = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
-        if (ok == 0) {
-            logger.err("App", "Shell_NotifyIconW(NIM_ADD) failed gle={d}", .{t.GetLastError()});
-        } else {
-            logger.info("App", "tray icon added", .{});
-        }
+        _ = t.Shell_NotifyIconW(t.NIM_ADD, &self.nid);
         self.updateTrayState(is_paused);
     }
 
@@ -488,9 +464,7 @@ pub const App = struct {
 
         self.nid.hIcon = if (is_paused) self.hicon_disabled else self.hicon_enabled;
         self.nid.uFlags = t.NIF_ICON | t.NIF_TIP;
-        if (t.Shell_NotifyIconW(t.NIM_MODIFY, &self.nid) == 0) {
-            logger.warn("App", "Shell_NotifyIconW(NIM_MODIFY) failed gle={d}", .{t.GetLastError()});
-        }
+        _ = t.Shell_NotifyIconW(t.NIM_MODIFY, &self.nid);
     }
 };
 
@@ -525,7 +499,6 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
 
     switch (msg) {
         t.WM_TRAY => {
-            logger.debug("Tray", "event wParam={x} lParam={x}", .{ wParam, lParam });
             const event_msg: u32 = @truncate(@as(usize, @bitCast(lParam)));
 
             if (event_msg == t.WM_LBUTTONDBLCLK) {
@@ -605,9 +578,7 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                     app.quitting = true;
                     _ = t.PostQuitMessage(0);
                 },
-                else => {
-                    logger.warn("Tray", "unhandled command id={d}", .{wParam & 0xFFFF});
-                },
+                else => {},
             }
         },
         t.WM_TIMER => {
@@ -622,7 +593,6 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                     const moved = cur.x != app.watchdog_pt.x or cur.y != app.watchdog_pt.y;
                     const last_seen = app.hook_engine.last_hook_mouse_ms.load(.acquire);
 
-                    // Reinstall hooks if cursor moved but no hook callback was received
                     if (moved and t.GetTickCount64() - last_seen > 6000) {
                         app.hook_engine.reinstall();
                     }

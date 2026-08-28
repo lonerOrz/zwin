@@ -116,21 +116,21 @@ pub const Config = struct {
         if (v.min_window_height) |mh| result.min_window_height = @max(mh, 50);
         if (v.log_max_days) |ld| result.log_max_days = @max(ld, 1);
 
-        if (v.key_center) |kc| if (kc.len > 0 and std.ascii.isAlphanumeric(kc[0])) {
-            result.key_center = std.ascii.toUpper(kc[0]);
-        };
-        if (v.key_topmost) |kt| if (kt.len > 0 and std.ascii.isAlphanumeric(kt[0])) {
-            result.key_topmost = std.ascii.toUpper(kt[0]);
-        };
-        if (v.key_close) |kc| if (kc.len > 0 and std.ascii.isAlphanumeric(kc[0])) {
-            result.key_close = std.ascii.toUpper(kc[0]);
-        };
+        parseKey(&result.key_center, v.key_center);
+        parseKey(&result.key_topmost, v.key_topmost);
+        parseKey(&result.key_close, v.key_close);
 
         if (v.active_border_hex) |hex| {
             if (Color.fromHex(hex)) |c| result.active_border_color = c;
         }
 
         return result;
+    }
+
+    fn parseKey(target: *u32, raw: ?[]const u8) void {
+        if (raw) |k| if (k.len > 0 and std.ascii.isAlphanumeric(k[0])) {
+            target.* = std.ascii.toUpper(k[0]);
+        };
     }
 };
 
