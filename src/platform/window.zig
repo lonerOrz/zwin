@@ -9,6 +9,81 @@ pub const Window = struct {
         return .{ .hwnd = hwnd };
     }
 
+    // Context struct for zero-alloc window enumerations
+    pub const SnapCollectorContext = struct {
+        exclude_hwnd: t.HWND,
+        list: *geom.SnapTargetList,
+    };
+
+    pub fn collectSnapTargets(exclude_hwnd: t.HWND, out_list: *geom.SnapTargetList) void {
+        out_list.len = 0;
+        var ctx = SnapCollectorContext{
+            .exclude_hwnd = exclude_hwnd,
+            .list = out_list,
+        };
+        _ = t.EnumWindows(enumSnapProc, @as(t.LPARAM, @bitCast(@intFromPtr(&ctx))));
+    }
+
+    fn enumSnapProc(hwnd: t.HWND, lparam: t.LPARAM) callconv(.winapi) t.BOOL {
+        const ctx: *SnapCollectorContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        if (hwnd == ctx.exclude_hwnd) return t.TRUE;
+        if (t.IsWindowVisible(hwnd) == 0 or t.IsIconic(hwnd) != 0) return t.TRUE;
+
+        const top = getTrueTopLevel(hwnd) orelse return t.TRUE;
+        if (top != hwnd) return t.TRUE;
+
+        const bounds = Window.init(top).getPhysicalBounds();
+        if (bounds.width() > 50 and bounds.height() > 50) {
+            ctx.list.append(bounds);
+            if (ctx.list.len >= geom.max_snap_targets) return t.FALSE;
+        }
+        return t.TRUE;
+    }
+
+    // Directional focus navigation context
+    pub const FocusContext = struct {
+        cur_hwnd: t.HWND,
+        cur_bounds: geom.Rect,
+        dir: geom.Direction,
+        best_hwnd: ?t.HWND = null,
+        best_score: i64 = std.math.maxInt(i64),
+    };
+
+    pub fn findDirectionalTarget(current_hwnd: t.HWND, dir: geom.Direction) ?t.HWND {
+        const cur_win = Window.init(current_hwnd);
+        var ctx = FocusContext{
+            .cur_hwnd = current_hwnd,
+            .cur_bounds = cur_win.getPhysicalBounds(),
+            .dir = dir,
+        };
+
+        _ = t.EnumWindows(enumFocusProc, @as(t.LPARAM, @bitCast(@intFromPtr(&ctx))));
+        return ctx.best_hwnd;
+    }
+
+    fn enumFocusProc(hwnd: t.HWND, lparam: t.LPARAM) callconv(.winapi) t.BOOL {
+        const ctx: *FocusContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        if (hwnd == ctx.cur_hwnd) return t.TRUE;
+        if (t.IsWindowVisible(hwnd) == 0 or t.IsIconic(hwnd) != 0) return t.TRUE;
+
+        const top = getTrueTopLevel(hwnd) orelse return t.TRUE;
+        if (top != hwnd) return t.TRUE;
+
+        const target_bounds = Window.init(top).getPhysicalBounds();
+        if (geom.scoreDirectionalCandidate(ctx.cur_bounds, target_bounds, ctx.dir)) |score| {
+            if (score < ctx.best_score) {
+                ctx.best_score = score;
+                ctx.best_hwnd = top;
+            }
+        }
+        return t.TRUE;
+    }
+
+    pub fn focusWindow(hwnd: t.HWND) void {
+        _ = t.ShowWindow(hwnd, t.SW_RESTORE);
+        _ = t.SetForegroundWindow(hwnd);
+    }
+
     // Resolve actionable top-level window, filtering tool windows, shell classes, and cloaked windows
     pub fn getTrueTopLevel(hwnd: t.HWND) ?t.HWND {
         if (@intFromPtr(hwnd) == 0) return null;
@@ -166,6 +241,18 @@ pub const Window = struct {
 
     pub fn minimize(self: Window) void {
         _ = t.ShowWindow(self.hwnd, t.SW_MINIMIZE);
+    }
+
+    pub fn toggleMaximize(self: Window) void {
+        if (t.IsZoomed(self.hwnd) != 0) {
+            _ = t.ShowWindow(self.hwnd, t.SW_RESTORE);
+        } else {
+            _ = t.ShowWindow(self.hwnd, t.SW_MAXIMIZE);
+        }
+    }
+
+    pub fn isMinimized(self: Window) bool {
+        return t.IsIconic(self.hwnd) != 0;
     }
 
     pub fn ensureRestored(self: Window) void {

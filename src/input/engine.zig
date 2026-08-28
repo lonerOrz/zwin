@@ -212,6 +212,30 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
             self.alt_state = .alt_held_consumed;
             self.enqueueIntent(.close_active_window);
             return 1;
+        } else if (kbd.vkCode == self.config.key_maximize) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.toggle_active_maximize);
+            return 1;
+        } else if (kbd.vkCode == self.config.key_restore_min) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.restore_last_minimized);
+            return 1;
+        } else if (kbd.vkCode == self.config.key_focus_left) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.{ .focus_direction = .left });
+            return 1;
+        } else if (kbd.vkCode == self.config.key_focus_down) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.{ .focus_direction = .down });
+            return 1;
+        } else if (kbd.vkCode == self.config.key_focus_up) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.{ .focus_direction = .up });
+            return 1;
+        } else if (kbd.vkCode == self.config.key_focus_right) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.{ .focus_direction = .right });
+            return 1;
         }
     }
 

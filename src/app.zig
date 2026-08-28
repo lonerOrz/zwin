@@ -54,12 +54,46 @@ pub const App = struct {
     win_hooks: ?resources.WinEventHooks = null,
     mutex: resources.SingleInstanceMutex = .{},
 
+    // Minimized-window LRU stack for Alt+N restore
+    minimized_stack: [16]t.HWND = undefined,
+    minimized_count: usize = 0,
+
     last_config_write_ms: u64 = 0,
     quitting: bool = false,
     taskbar_created_msg: u32 = 0,
     watchdog_pt: t.POINT = .{ .x = 0, .y = 0 },
 
     pub var global: ?*App = null;
+
+    pub fn recordMinimized(self: *App, hwnd: t.HWND) void {
+        if (@intFromPtr(hwnd) == 0) return;
+        var i: usize = 0;
+        while (i < self.minimized_count) {
+            if (self.minimized_stack[i] == hwnd) {
+                if (i + 1 < self.minimized_count) {
+                    std.mem.copyForwards(t.HWND, self.minimized_stack[i .. self.minimized_count - 1], self.minimized_stack[i + 1 .. self.minimized_count]);
+                }
+                self.minimized_count -= 1;
+                break;
+            }
+            i += 1;
+        }
+        if (self.minimized_count < self.minimized_stack.len) {
+            self.minimized_stack[self.minimized_count] = hwnd;
+            self.minimized_count += 1;
+        }
+    }
+
+    pub fn popLastMinimized(self: *App) ?t.HWND {
+        while (self.minimized_count > 0) {
+            self.minimized_count -= 1;
+            const candidate = self.minimized_stack[self.minimized_count];
+            if (t.IsWindow(candidate) != 0 and Window.init(candidate).isMinimized()) {
+                return candidate;
+            }
+        }
+        return null;
+    }
 
     pub fn init(allocator: std.mem.Allocator) !*App {
         const self = try allocator.create(App);
@@ -357,7 +391,6 @@ pub const App = struct {
                 const ex_style = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
                 const is_topmost = (ex_style & t.WS_EX_TOPMOST) != 0;
                 const will_topmost = !is_topmost;
-                // Apply topmost immediately on main thread — avoids worker-thread Z-order race
                 _ = t.SetWindowPos(
                     target.hwnd,
                     if (will_topmost) t.HWND_TOPMOST else t.HWND_NOTOPMOST,
@@ -368,6 +401,21 @@ pub const App = struct {
                     t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOACTIVATE,
                 );
                 self.osd.showTopmost(will_topmost, self.config.language);
+            },
+            .toggle_active_maximize => {
+                const target = self.resolveActiveTarget() orelse return;
+                Window.init(target.hwnd).toggleMaximize();
+            },
+            .restore_last_minimized => {
+                if (self.popLastMinimized()) |hwnd| {
+                    Window.focusWindow(hwnd);
+                }
+            },
+            .focus_direction => |dir| {
+                const current = t.GetForegroundWindow() orelse return;
+                if (Window.findDirectionalTarget(current, dir)) |target| {
+                    Window.focusWindow(target);
+                }
             },
             .close_active_window => {
                 const target = self.resolveActiveTarget() orelse return;
@@ -442,6 +490,7 @@ fn winEventCallback(_: t.HWINEVENTHOOK, event: u32, hwnd: t.HWND, idObject: i32,
         },
         t.EVENT_OBJECT_SHOW, t.EVENT_SYSTEM_MINIMIZEEND => app.refreshActiveBorder(),
         t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE, t.EVENT_SYSTEM_MINIMIZESTART => {
+            app.recordMinimized(hwnd);
             app.border_mgr.onWindowClosedOrHidden(hwnd);
             app.refreshActiveBorder();
         },

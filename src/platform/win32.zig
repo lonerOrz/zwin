@@ -306,6 +306,7 @@ pub const SWP_NOCOPYBITS: u32 = 0x0100;
 pub const SWP_NOOWNERZORDER: u32 = 0x0200;
 
 pub const SW_MINIMIZE: i32 = 6;
+pub const SW_MAXIMIZE: i32 = 3;
 pub const SW_HIDE: i32 = 0;
 pub const SW_RESTORE: i32 = 9;
 
@@ -479,6 +480,8 @@ pub extern "user32" fn GetWindowRect(hwnd: HWND, lpRect: *RECT) callconv(.winapi
 pub extern "user32" fn SetWindowPos(hwnd: HWND, hWndInsertAfter: ?HWND, X: i32, Y: i32, cx: i32, cy: i32, uFlags: u32) callconv(.winapi) BOOL;
 pub extern "user32" fn ShowWindow(hwnd: HWND, nCmdShow: i32) callconv(.winapi) BOOL;
 pub extern "user32" fn IsZoomed(hwnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn IsIconic(hwnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn EnumWindows(lpEnumFunc: *const fn (HWND, LPARAM) callconv(.winapi) BOOL, lParam: LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn IsWindowVisible(hwnd: HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn IsWindow(hWnd: HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn GetClassNameW(hwnd: HWND, lpClassName: [*]u16, nMaxCount: i32) callconv(.winapi) i32;

@@ -5,14 +5,24 @@ pub const Color = @import("color.zig").Color;
 pub const Config = struct {
     language: Language = .auto,
 
+    // Keybindings (Alt + Key)
     key_center: u32 = 'C',
     key_topmost: u32 = 'T',
     key_close: u32 = 'Q',
+    key_maximize: u32 = 'M',
+    key_restore_min: u32 = 'N',
+    key_focus_left: u32 = 'H',
+    key_focus_down: u32 = 'J',
+    key_focus_up: u32 = 'K',
+    key_focus_right: u32 = 'L',
 
+    // Features
     enable_border: bool = true,
     enable_wheel_opacity: bool = true,
     enable_autostart: bool = false,
     enable_elevated: bool = false,
+    enable_window_snap: bool = true,
+    snap_threshold: i32 = 18,
     opacity_step: u8 = 15,
 
     active_border_color: Color = Color.rgb(255, 136, 0),
@@ -28,10 +38,18 @@ pub const Config = struct {
         \\  "key_center": "C",
         \\  "key_topmost": "T",
         \\  "key_close": "Q",
+        \\  "key_maximize": "M",
+        \\  "key_restore_min": "N",
+        \\  "key_focus_left": "H",
+        \\  "key_focus_down": "J",
+        \\  "key_focus_up": "K",
+        \\  "key_focus_right": "L",
         \\  "enable_border": true,
         \\  "enable_wheel_opacity": true,
         \\  "enable_autostart": false,
         \\  "enable_elevated": false,
+        \\  "enable_window_snap": true,
+        \\  "snap_threshold": 18,
         \\  "opacity_step": 15,
         \\  "active_border_hex": "#FF8800",
         \\  "min_window_width": 120,
@@ -52,10 +70,18 @@ pub const Config = struct {
             \\  "key_center": "{c}",
             \\  "key_topmost": "{c}",
             \\  "key_close": "{c}",
+            \\  "key_maximize": "{c}",
+            \\  "key_restore_min": "{c}",
+            \\  "key_focus_left": "{c}",
+            \\  "key_focus_down": "{c}",
+            \\  "key_focus_up": "{c}",
+            \\  "key_focus_right": "{c}",
             \\  "enable_border": {},
             \\  "enable_wheel_opacity": {},
             \\  "enable_autostart": {},
             \\  "enable_elevated": {},
+            \\  "enable_window_snap": {},
+            \\  "snap_threshold": {d},
             \\  "opacity_step": {d},
             \\  "active_border_hex": "{s}",
             \\  "min_window_width": {d},
@@ -69,10 +95,18 @@ pub const Config = struct {
                 @as(u8, @truncate(self.key_center)),
                 @as(u8, @truncate(self.key_topmost)),
                 @as(u8, @truncate(self.key_close)),
+                @as(u8, @truncate(self.key_maximize)),
+                @as(u8, @truncate(self.key_restore_min)),
+                @as(u8, @truncate(self.key_focus_left)),
+                @as(u8, @truncate(self.key_focus_down)),
+                @as(u8, @truncate(self.key_focus_up)),
+                @as(u8, @truncate(self.key_focus_right)),
                 self.enable_border,
                 self.enable_wheel_opacity,
                 self.enable_autostart,
                 self.enable_elevated,
+                self.enable_window_snap,
+                self.snap_threshold,
                 self.opacity_step,
                 hex,
                 self.min_window_width,
@@ -91,10 +125,18 @@ pub const Config = struct {
             key_center: ?[]const u8 = null,
             key_topmost: ?[]const u8 = null,
             key_close: ?[]const u8 = null,
+            key_maximize: ?[]const u8 = null,
+            key_restore_min: ?[]const u8 = null,
+            key_focus_left: ?[]const u8 = null,
+            key_focus_down: ?[]const u8 = null,
+            key_focus_up: ?[]const u8 = null,
+            key_focus_right: ?[]const u8 = null,
             enable_border: ?bool = null,
             enable_wheel_opacity: ?bool = null,
             enable_autostart: ?bool = null,
             enable_elevated: ?bool = null,
+            enable_window_snap: ?bool = null,
+            snap_threshold: ?i32 = null,
             opacity_step: ?u8 = null,
             active_border_hex: ?[]const u8 = null,
             min_window_width: ?i32 = null,
@@ -111,6 +153,8 @@ pub const Config = struct {
         if (v.enable_wheel_opacity) |wo| result.enable_wheel_opacity = wo;
         if (v.enable_autostart) |ea| result.enable_autostart = ea;
         if (v.enable_elevated) |ee| result.enable_elevated = ee;
+        if (v.enable_window_snap) |es| result.enable_window_snap = es;
+        if (v.snap_threshold) |st| result.snap_threshold = std.math.clamp(st, 0, 50);
         if (v.opacity_step) |os| result.opacity_step = std.math.clamp(os, 1, 100);
         if (v.min_window_width) |mw| result.min_window_width = @max(mw, 50);
         if (v.min_window_height) |mh| result.min_window_height = @max(mh, 50);
@@ -119,6 +163,12 @@ pub const Config = struct {
         parseKey(&result.key_center, v.key_center);
         parseKey(&result.key_topmost, v.key_topmost);
         parseKey(&result.key_close, v.key_close);
+        parseKey(&result.key_maximize, v.key_maximize);
+        parseKey(&result.key_restore_min, v.key_restore_min);
+        parseKey(&result.key_focus_left, v.key_focus_left);
+        parseKey(&result.key_focus_down, v.key_focus_down);
+        parseKey(&result.key_focus_up, v.key_focus_up);
+        parseKey(&result.key_focus_right, v.key_focus_right);
 
         if (v.active_border_hex) |hex| {
             if (Color.fromHex(hex)) |c| result.active_border_color = c;
@@ -131,6 +181,27 @@ pub const Config = struct {
         if (raw) |k| if (k.len > 0 and std.ascii.isAlphanumeric(k[0])) {
             target.* = std.ascii.toUpper(k[0]);
         };
+    }
+
+    /// Returns true if the JSON source is missing any field newer than the prior release,
+    /// indicating the disk file needs a write-back to keep the template complete.
+    pub fn hasMissingFields(json_bytes: []const u8) bool {
+        const new_keys = [_][]const u8{
+            "key_maximize",       "key_restore_min",
+            "key_focus_left",     "key_focus_down",
+            "key_focus_up",       "key_focus_right",
+            "enable_window_snap", "snap_threshold",
+        };
+        var has_all_new = true;
+        for (new_keys) |k| {
+            var needle_buf: [64]u8 = undefined;
+            const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{k}) catch unreachable;
+            if (std.mem.indexOf(u8, json_bytes, needle) == null) {
+                has_all_new = false;
+                break;
+            }
+        }
+        return !has_all_new;
     }
 };
 
@@ -171,4 +242,24 @@ test "serializeToJson roundtrips through loadFromJson" {
     defer allocator.free(json);
 
     try std.testing.expectEqual(cfg, Config.loadFromJson(allocator, json));
+}
+
+test "loadFromJson parses new keybindings and snap settings" {
+    const allocator = std.testing.allocator;
+    const c = Config.loadFromJson(allocator, "{\"key_maximize\":\"X\",\"key_restore_min\":\"R\",\"key_focus_left\":\"A\",\"enable_window_snap\":false,\"snap_threshold\":25}");
+    try std.testing.expectEqual(@as(u32, 'X'), c.key_maximize);
+    try std.testing.expectEqual(@as(u32, 'R'), c.key_restore_min);
+    try std.testing.expectEqual(@as(u32, 'A'), c.key_focus_left);
+    try std.testing.expect(!c.enable_window_snap);
+    try std.testing.expectEqual(@as(i32, 25), c.snap_threshold);
+}
+
+test "hasMissingFields detects old config without new keys" {
+    // Old config missing new keys
+    const old = "{\"language\":\"en\",\"key_center\":\"C\"}";
+    try std.testing.expect(Config.hasMissingFields(old));
+
+    // New config with all keys present
+    const new_json = "{\"language\":\"en\",\"key_maximize\":\"M\",\"key_restore_min\":\"N\",\"key_focus_left\":\"H\",\"key_focus_down\":\"J\",\"key_focus_up\":\"K\",\"key_focus_right\":\"L\",\"enable_window_snap\":true,\"snap_threshold\":18}";
+    try std.testing.expect(!Config.hasMissingFields(new_json));
 }
