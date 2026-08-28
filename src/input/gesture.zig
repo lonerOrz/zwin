@@ -46,6 +46,33 @@ fn sectorToWmsz(sector: geom.Sector) usize {
     };
 }
 
+// Map 3×3 grid sector to the corresponding Win32 cursor resource ID
+fn cursorIdForSector(sector: geom.Sector) usize {
+    return switch (sector) {
+        .top_left, .bottom_right => t.IDC_SIZENWSE,
+        .top_right, .bottom_left => t.IDC_SIZENESW,
+        .left, .right => t.IDC_SIZEWE,
+        .top, .bottom => t.IDC_SIZENS,
+        .center => t.IDC_SIZEALL,
+    };
+}
+
+fn setCursorForSector(sector: geom.Sector) void {
+    const id = cursorIdForSector(sector);
+    const cur = t.LoadCursorW(null, @ptrFromInt(id));
+    _ = t.SetCursor(cur);
+}
+
+fn setCursorForDrag() void {
+    const cur = t.LoadCursorW(null, @ptrFromInt(t.IDC_SIZEALL));
+    _ = t.SetCursor(cur);
+}
+
+fn restoreCursor() void {
+    const cur = t.LoadCursorW(null, @ptrFromInt(t.IDC_ARROW));
+    _ = t.SetCursor(cur);
+}
+
 // Continuous gesture state machine for window drag and resize
 pub const GestureStateMachine = struct {
     state: GestureState = .idle,
@@ -72,6 +99,8 @@ pub const GestureStateMachine = struct {
             .work_area = win.getMonitorWorkArea(),
             .dpi = t.GetDpiForWindow(target.hwnd),
         } };
+        const cur = t.LoadCursorW(null, @ptrFromInt(t.IDC_SIZEALL));
+        _ = t.SetCursor(cur);
         announceMoveSize(self.state.dragging.target.hwnd);
     }
 
@@ -92,13 +121,16 @@ pub const GestureStateMachine = struct {
             .shadow_pad = pad,
             .work_area = win.getMonitorWorkArea(),
         } };
+        setCursorForSector(sector);
         announceMoveSize(self.state.resizing.target.hwnd);
     }
 
     pub fn updateMouseMove(self: *GestureStateMachine, current_pt: geom.Point) void {
+        const app_ptr = @import("../app.zig").App.global;
         switch (self.state) {
             .idle => {},
             .dragging => |d| {
+                setCursorForDrag();
                 var a = d;
                 const dpi = t.GetDpiForWindow(a.target.hwnd);
                 if (dpi != 0 and dpi != a.dpi) {
@@ -129,6 +161,7 @@ pub const GestureStateMachine = struct {
                 } });
             },
             .resizing => |r| {
+                setCursorForSector(r.sector);
                 const delta: geom.Point = .{
                     .x = current_pt.x - r.start_pt.x,
                     .y = current_pt.y - r.start_pt.y,
@@ -146,11 +179,18 @@ pub const GestureStateMachine = struct {
                 }
 
                 const pad = r.shadow_pad;
+                const width = rc.width();
+                const height = rc.height();
+
+                if (app_ptr) |app| {
+                    app.osd.showResize(current_pt, width, height);
+                }
+
                 self.worker.postStreaming(r.target, .{ .resize = .{
                     .x = rc.left - pad.l,
                     .y = rc.top - pad.t,
-                    .w = rc.width() + pad.l + pad.r,
-                    .h = rc.height() + pad.t + pad.b,
+                    .w = width + pad.l + pad.r,
+                    .h = height + pad.t + pad.b,
                     .wmsz = sectorToWmsz(r.sector),
                 } });
             },
@@ -158,16 +198,23 @@ pub const GestureStateMachine = struct {
     }
 
     pub fn finish(self: *GestureStateMachine) void {
+        const app_ptr = @import("../app.zig").App.global;
+        if (app_ptr) |app| app.osd.hide();
+
         switch (self.state) {
             .dragging => |d| endMoveSize(d.target.hwnd),
             .resizing => |r| endMoveSize(r.target.hwnd),
             .idle => {},
         }
         self.state = .idle;
+        restoreCursor();
     }
 
     // Abort gesture on ESC and restore initial window bounds
     pub fn abort(self: *GestureStateMachine) void {
+        const app_ptr = @import("../app.zig").App.global;
+        if (app_ptr) |app| app.osd.hide();
+
         switch (self.state) {
             .idle => return,
             .dragging => |d| {

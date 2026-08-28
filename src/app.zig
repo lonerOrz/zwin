@@ -12,6 +12,7 @@ const WindowWorker = @import("infra/worker.zig").WindowWorker;
 const ConfigWatcher = @import("infra/watcher.zig").ConfigWatcher;
 const ConfigStore = @import("infra/config_store.zig").ConfigStore;
 const BorderManager = @import("wm/border.zig").BorderManager;
+const OsdManager = @import("wm/osd.zig").OsdManager;
 const GestureStateMachine = @import("input/gesture.zig").GestureStateMachine;
 const InputEngine = @import("input/engine.zig").InputEngine;
 const Autostart = @import("platform/autostart.zig").Autostart;
@@ -42,6 +43,7 @@ pub const App = struct {
     logger_inst: Logger,
     worker: WindowWorker,
     border_mgr: BorderManager,
+    osd: OsdManager = undefined,
     gesture: GestureStateMachine,
     hook_engine: InputEngine,
     watcher: ConfigWatcher = .{},
@@ -91,6 +93,8 @@ pub const App = struct {
 
         _ = self.worker.invalidateSession();
 
+        self.osd = OsdManager.init(hinst);
+
         self.msg_win = try resources.MessageWindow.create(hinst, appWndProc);
         const hwnd = self.msg_win.?.hwnd;
 
@@ -126,6 +130,8 @@ pub const App = struct {
         logger.info("App", "zwin shutting down...", .{});
 
         self.hook_engine.reportDroppedIntents();
+
+        self.osd.deinit();
 
         if (self.tray) |*tr| tr.deinit();
         if (self.win_hooks) |*wh| wh.uninstall();
@@ -350,9 +356,11 @@ pub const App = struct {
                 const target = self.resolveActiveTarget() orelse return;
                 const ex_style = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
                 const is_topmost = (ex_style & t.WS_EX_TOPMOST) != 0;
+                const will_topmost = !is_topmost;
                 self.worker.postDiscrete(target, .{
-                    .set_topmost = .{ .is_topmost = !is_topmost },
+                    .set_topmost = .{ .is_topmost = will_topmost },
                 });
+                self.osd.showTopmost(will_topmost, self.config.language);
             },
             .close_active_window => {
                 const target = self.resolveActiveTarget() orelse return;
@@ -367,7 +375,19 @@ pub const App = struct {
             },
             .adjust_opacity_at => |op| {
                 const target = self.resolveTargetAtPoint(op.pt) orelse self.resolveActiveTarget() orelse return;
-                Window.init(target.hwnd).adjustOpacity(op.delta);
+                const win = Window.init(target.hwnd);
+                win.adjustOpacity(op.delta);
+
+                // Read back current alpha for OSD feedback
+                var alpha: u8 = 255;
+                var flags: u32 = 0;
+                const ex = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
+                if ((ex & t.WS_EX_LAYERED) != 0) {
+                    if (t.GetLayeredWindowAttributes(target.hwnd, null, &alpha, &flags) == 0 or (flags & t.LWA_ALPHA) == 0) {
+                        alpha = 255;
+                    }
+                }
+                self.osd.showOpacity(op.pt, alpha, self.config.language);
             },
         }
     }
