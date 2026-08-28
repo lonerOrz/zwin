@@ -2,10 +2,16 @@ const std = @import("std");
 const builtin = @import("builtin");
 const t = @import("platform/win32.zig");
 const App = @import("app.zig").App;
+const resources = @import("platform/resources.zig");
 const single_instance_mutex_name = @import("app.zig").single_instance_mutex_name;
 const ConfigStore = @import("infra/config_store.zig").ConfigStore;
 
 pub fn main() !void {
+    // Declare Per-Monitor V2 DPI awareness before any window/GDI calls
+    // to prevent DWM from applying blurry upscaling and coordinate drift
+    const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
+    _ = t.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     var gpa = if (builtin.mode == .Debug) std.heap.DebugAllocator(.{}){} else {};
     defer if (builtin.mode == .Debug) {
         _ = gpa.deinit();
@@ -19,9 +25,11 @@ pub fn main() !void {
         return;
     }
 
+    // Load config before elevation check so the same instance is reused
+    const cfg = ConfigStore.load(allocator);
+
     // Early elevation handoff before initializing subsystems; fall back on cancel
     if (t.IsUserAnAdmin() == 0) {
-        const cfg = ConfigStore.load(allocator);
         if (cfg.enable_elevated) {
             var path_buf: [1024]u16 = undefined;
             const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
@@ -43,11 +51,11 @@ pub fn main() !void {
     }
 
     const hinst = t.GetModuleHandleW(null);
-    var app = try App.init(allocator);
+    var app = try App.init(allocator, cfg);
     defer app.deinit();
 
     // Transfer mutex ownership to App for restart and deinit lifecycle management
-    app.single_instance_mutex = mutex;
+    app.mutex = resources.SingleInstanceMutex.adopt(mutex);
 
     try app.start(hinst);
 

@@ -23,7 +23,16 @@ pub const ConfigStore = struct {
         };
         defer allocator.free(json_bytes);
 
-        return Config.loadFromJson(allocator, json_bytes);
+        const cfg = Config.loadFromJson(allocator, json_bytes);
+
+        // Auto-migrate: if the disk JSON is missing fields from this release,
+        // write back the complete template so the file stays up to date.
+        if (Config.hasMissingFields(json_bytes)) {
+            save(allocator, &cfg);
+            logger.info("Config", "migrated old config to include new fields", .{});
+        }
+
+        return cfg;
     }
 
     pub fn save(allocator: std.mem.Allocator, config: *const Config) void {

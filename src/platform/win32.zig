@@ -244,6 +244,7 @@ pub const WM_GETMINMAXINFO: u32 = 0x0024;
 pub const WM_SIZING: u32 = 0x0214;
 pub const WM_ENTERSIZEMOVE: u32 = 0x0231;
 pub const WM_EXITSIZEMOVE: u32 = 0x0232;
+pub const WM_PAINT: u32 = 0x000F;
 
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
@@ -278,11 +279,15 @@ pub const GWL_STYLE: i32 = -16;
 pub const GWL_EXSTYLE: i32 = -20;
 pub const WS_CHILD: isize = 0x40000000;
 pub const WS_CAPTION: isize = 0x00C00000;
+pub const WS_POPUP: isize = 0x80000000;
 pub const WS_EX_TOPMOST: isize = 0x00000008;
 pub const WS_EX_TOOLWINDOW: isize = 0x00000080;
 pub const WS_EX_APPWINDOW: isize = 0x00040000;
 pub const WS_EX_LAYERED: isize = 0x00080000;
+pub const WS_EX_TRANSPARENT: isize = 0x0020000;
+pub const WS_EX_NOACTIVATE: isize = 0x08000000;
 pub const LWA_ALPHA: u32 = 0x00000002;
+pub const LWA_COLORKEY: u32 = 0x00000001;
 
 pub const GA_ROOT: u32 = 2;
 pub const GA_ROOTOWNER: u32 = 3;
@@ -290,13 +295,19 @@ pub const GA_ROOTOWNER: u32 = 3;
 // Window placement and state
 pub const SWP_NOSIZE: u32 = 0x0001;
 pub const SWP_NOMOVE: u32 = 0x0002;
+pub const SWP_NOREDRAW: u32 = 0x0008;
 pub const SWP_NOZORDER: u32 = 0x0004;
 pub const SWP_NOACTIVATE: u32 = 0x0010;
+pub const SWP_SHOWWINDOW: u32 = 0x0040;
 pub const SWP_FRAMECHANGED: u32 = 0x0020;
+pub const SWP_NOSENDCHANGING: u32 = 0x0400;
+pub const SWP_DEFERERASE: u32 = 0x2000;
 pub const SWP_NOCOPYBITS: u32 = 0x0100;
 pub const SWP_NOOWNERZORDER: u32 = 0x0200;
 
 pub const SW_MINIMIZE: i32 = 6;
+pub const SW_MAXIMIZE: i32 = 3;
+pub const SW_HIDE: i32 = 0;
 pub const SW_RESTORE: i32 = 9;
 
 pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
@@ -316,6 +327,21 @@ pub const WMSZ_BOTTOMRIGHT: usize = 8;
 pub const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 pub const DWMWA_CLOAKED: u32 = 14;
 pub const DWMWA_BORDER_COLOR: u32 = 34;
+pub const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+pub const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+pub const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
+
+// DWM corner preference values
+pub const DWMWCP_DEFAULT: u32 = 0;
+pub const DWMWCP_DONOTROUND: u32 = 1;
+pub const DWMWCP_ROUND: u32 = 2;
+pub const DWMWCP_ROUNDSMALL: u32 = 3;
+
+// DWM system backdrop types
+pub const DWMSBT_DISABLE: u32 = 0;
+pub const DWMSBT_MAINWINDOW: u32 = 1;
+pub const DWMSBT_TRANSIENTWINDOW: u32 = 2;
+pub const DWMSBT_TABBEDWINDOW: u32 = 3;
 
 // Tray and menu flags
 pub const NIM_ADD: u32 = 0x00000000;
@@ -347,6 +373,7 @@ pub const EVENT_SYSTEM_MINIMIZEEND: u32 = 0x0017;
 pub const EVENT_OBJECT_DESTROY: u32 = 0x8001;
 pub const EVENT_OBJECT_SHOW: u32 = 0x8002;
 pub const EVENT_OBJECT_HIDE: u32 = 0x8003;
+pub const EVENT_OBJECT_LOCATIONCHANGE: u32 = 0x800B;
 pub const OBJID_WINDOW: i32 = 0;
 
 // Process, monitor and security constants
@@ -358,6 +385,7 @@ pub const HIGH_PRIORITY_CLASS: u32 = 0x00000080;
 pub const THREAD_PRIORITY_HIGHEST: i32 = 2;
 pub const SMTO_ABORTIFHUNG: u32 = 0x0002;
 pub const MSGFLT_ALLOW: u32 = 1;
+pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
 // File system and I/O flags
 pub const GENERIC_READ: u32 = 0x80000000;
@@ -453,6 +481,8 @@ pub extern "user32" fn GetWindowRect(hwnd: HWND, lpRect: *RECT) callconv(.winapi
 pub extern "user32" fn SetWindowPos(hwnd: HWND, hWndInsertAfter: ?HWND, X: i32, Y: i32, cx: i32, cy: i32, uFlags: u32) callconv(.winapi) BOOL;
 pub extern "user32" fn ShowWindow(hwnd: HWND, nCmdShow: i32) callconv(.winapi) BOOL;
 pub extern "user32" fn IsZoomed(hwnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn IsIconic(hwnd: HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn EnumWindows(lpEnumFunc: *const fn (HWND, LPARAM) callconv(.winapi) BOOL, lParam: LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn IsWindowVisible(hwnd: HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn IsWindow(hWnd: HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn GetClassNameW(hwnd: HWND, lpClassName: [*]u16, nMaxCount: i32) callconv(.winapi) i32;
@@ -463,6 +493,9 @@ pub extern "user32" fn SetWindowLongPtrW(hwnd: HWND, nIndex: i32, dwNewLong: isi
 pub extern "user32" fn SetLayeredWindowAttributes(hwnd: HWND, crKey: u32, bAlpha: u8, dwFlags: u32) callconv(.winapi) BOOL;
 pub extern "user32" fn GetLayeredWindowAttributes(hwnd: HWND, pcrKey: ?*u32, pbAlpha: ?*u8, pdwFlags: ?*u32) callconv(.winapi) BOOL;
 
+pub extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: BOOL, dwProcessId: u32) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn QueryFullProcessImageNameW(hProcess: HANDLE, dwFlags: u32, lpExeName: [*]u16, lpdwSize: *u32) callconv(.winapi) BOOL;
+pub extern "user32" fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: ?*u32) callconv(.winapi) u32;
 pub extern "user32" fn GetCursorPos(lpPoint: *POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetAsyncKeyState(vKey: i32) callconv(.winapi) i16;
 pub extern "user32" fn SendInput(cInputs: u32, pInputs: [*]const INPUT, cbSize: i32) callconv(.winapi) u32;
@@ -480,7 +513,8 @@ pub extern "user32" fn CreatePopupMenu() callconv(.winapi) ?HMENU;
 pub extern "user32" fn DestroyMenu(hMenu: HMENU) callconv(.winapi) BOOL;
 pub extern "user32" fn AppendMenuW(hMenu: HMENU, uFlags: u32, uIDNewItem: usize, lpNewItem: ?[*:0]const u16) callconv(.winapi) BOOL;
 pub extern "user32" fn TrackPopupMenu(hMenu: HMENU, uFlags: u32, x: i32, y: i32, nReserved: i32, hWnd: HWND, prcRect: ?*const RECT) callconv(.winapi) BOOL;
-pub extern "user32" fn LoadIconW(hInstance: ?HINSTANCE, lpIconName: ?[*:0]const u16) callconv(.winapi) ?HICON;
+pub extern "user32" fn LoadIconW(hInstance: ?HINSTANCE, lpIconName: ?[*:0]align(1) const u16) callconv(.winapi) ?HICON;
+pub extern "user32" fn LoadCursorW(hInstance: ?HINSTANCE, lpCursorName: ?*const anyopaque) callconv(.winapi) ?*anyopaque;
 
 // Win32 API functions: advapi32.dll
 pub extern "advapi32" fn RegOpenKeyExW(hKey: HKEY, lpSubKey: [*:0]const u16, ulOptions: u32, samDesired: u32, phkResult: *HKEY) callconv(.winapi) i32;
@@ -494,9 +528,67 @@ pub extern "shell32" fn Shell_NotifyIconW(dwMessage: u32, lpData: *NOTIFYICONDAT
 pub extern "shell32" fn IsUserAnAdmin() callconv(.winapi) BOOL;
 pub extern "shell32" fn ShellExecuteW(hwnd: ?HWND, lpOperation: ?[*:0]const u16, lpFile: [*:0]const u16, lpParameters: ?[*:0]const u16, lpDirectory: ?[*:0]const u16, nShowCmd: i32) callconv(.winapi) ?HINSTANCE;
 
+// Cursor resource IDs
+pub const IDC_ARROW: usize = 32512;
+pub const IDC_SIZEALL: usize = 32646;
+pub const IDC_SIZENWSE: usize = 32642;
+pub const IDC_SIZENESW: usize = 32643;
+pub const IDC_SIZEWE: usize = 32644;
+pub const IDC_SIZENS: usize = 32645;
+
 // Win32 API functions: dwmapi.dll
 pub extern "dwmapi" fn DwmGetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
 pub extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
+// Win32 API functions: user32.dll — DPI awareness
+pub extern "user32" fn SetProcessDpiAwarenessContext(value: isize) callconv(.winapi) BOOL;
+
+// Win32 API functions: user32.dll — cursor
+pub extern "user32" fn SetCursor(hCursor: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+
+// GDI handle types and drawing constants
+pub const HDC = *opaque {};
+pub const HFONT = *opaque {};
+pub const HBRUSH = *opaque {};
+pub const HPEN = *opaque {};
+
+pub const TRANSPARENT: i32 = 1;
+pub const DT_LEFT: u32 = 0x00000000;
+pub const DT_CENTER: u32 = 0x00000001;
+pub const DT_VCENTER: u32 = 0x00000004;
+pub const DT_SINGLELINE: u32 = 0x00000020;
+pub const DEFAULT_CHARSET: u32 = 1;
+pub const OUT_DEFAULT_PRECIS: u32 = 0;
+pub const CLIP_DEFAULT_PRECIS: u32 = 0;
+pub const CLEARTYPE_QUALITY: u32 = 5;
+pub const DEFAULT_PITCH: u32 = 0;
+pub const FF_DONTCARE: u32 = 0;
+
+// Win32 API functions: gdi32.dll
+pub extern "gdi32" fn CreateFontW(cHeight: i32, cWidth: i32, cEscapement: i32, cOrientation: i32, cWeight: i32, bItalic: u32, bUnderline: u32, bStrikeOut: u32, iCharSet: u32, iOutPrecision: u32, iClipPrecision: u32, iQuality: u32, iPitchAndFamily: u32, pszFaceName: ?[*:0]const u16) callconv(.winapi) ?HFONT;
+pub extern "gdi32" fn CreateSolidBrush(color: u32) callconv(.winapi) ?HBRUSH;
+pub extern "gdi32" fn CreatePen(iStyle: i32, cWidth: i32, color: u32) callconv(.winapi) ?HPEN;
+pub extern "gdi32" fn SelectObject(hdc: HDC, h: *anyopaque) callconv(.winapi) ?*anyopaque;
+pub extern "gdi32" fn DeleteObject(ho: *anyopaque) callconv(.winapi) BOOL;
+pub extern "gdi32" fn RoundRect(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32, width: i32, height: i32) callconv(.winapi) BOOL;
+pub extern "gdi32" fn SetBkMode(hdc: HDC, mode: i32) callconv(.winapi) i32;
+pub extern "gdi32" fn SetTextColor(hdc: HDC, color: u32) callconv(.winapi) u32;
+
+// Win32 API functions: user32.dll — painting
+pub extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.winapi) ?HDC;
+pub extern "user32" fn EndPaint(hWnd: HWND, lpPaint: *const PAINTSTRUCT) callconv(.winapi) BOOL;
+pub extern "user32" fn InvalidateRect(hWnd: HWND, lpRect: ?*const RECT, bErase: BOOL) callconv(.winapi) BOOL;
+pub extern "user32" fn DrawTextW(hdc: HDC, lpchText: [*]const u16, cchText: i32, lprc: *RECT, format: u32) callconv(.winapi) i32;
+pub extern "user32" fn FillRect(hdc: HDC, lprc: *const RECT, hbr: HBRUSH) callconv(.winapi) i32;
+
+// PAINTSTRUCT layout for BeginPaint/EndPaint
+pub const PAINTSTRUCT = extern struct {
+    hdc: HDC,
+    fErase: BOOL,
+    rcPaint: RECT,
+    fRestore: BOOL,
+    fIncUpdate: BOOL,
+    rgbReserved: [32]u8,
+};
 
 // Utility functions
 pub fn unixNow() i64 {

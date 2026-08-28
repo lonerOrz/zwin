@@ -14,7 +14,8 @@ pub const AltProtocolState = enum {
     alt_held_consumed,
 };
 
-const intent_cap = 8;
+const intent_cap: usize = 16;
+const intent_mask: usize = intent_cap - 1;
 
 pub const MouseButton = enum { left, right };
 
@@ -43,10 +44,11 @@ pub const InputEngine = struct {
     // Watchdog timestamp updated on every mouse move
     last_hook_mouse_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
-    lock: t.SRWLOCK = .{},
+    head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     intents: [intent_cap]UserIntent = undefined,
-    intent_head: usize = 0,
-    intent_len: usize = 0,
+
+    dropped_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     drag_threshold: i32 = 4,
 
@@ -127,30 +129,40 @@ pub const InputEngine = struct {
         _ = t.SendInput(2, &inputs, @sizeOf(t.INPUT));
     }
 
-    // Non-blocking queue for dispatching intents to the main thread
     fn enqueueIntent(self: *InputEngine, intent: UserIntent) void {
-        var full = false;
-        t.AcquireSRWLockExclusive(&self.lock);
-        if (self.intent_len < intent_cap) {
-            self.intents[(self.intent_head + self.intent_len) % intent_cap] = intent;
-            self.intent_len += 1;
-        } else {
-            full = true;
+        const current_tail = self.tail.load(.unordered);
+        const next_tail = (current_tail + 1) & intent_mask;
+
+        const current_head = self.head.load(.acquire);
+        if (next_tail == current_head) {
+            _ = self.dropped_count.fetchAdd(1, .monotonic);
+            return;
         }
-        t.ReleaseSRWLockExclusive(&self.lock);
+
+        self.intents[current_tail] = intent;
+        self.tail.store(next_tail, .release);
         _ = t.PostMessageW(self.notify_hwnd, t.WM_APP_INTENT, 0, 0);
-        if (full) logger.warn("Hook", "intent queue full, dropped intent", .{});
     }
 
-    // Pop pending intent on the main thread
     pub fn nextIntent(self: *InputEngine) ?UserIntent {
-        t.AcquireSRWLockExclusive(&self.lock);
-        defer t.ReleaseSRWLockExclusive(&self.lock);
-        if (self.intent_len == 0) return null;
-        const intent = self.intents[self.intent_head];
-        self.intent_head = (self.intent_head + 1) % intent_cap;
-        self.intent_len -= 1;
+        const current_tail = self.tail.load(.acquire);
+        const current_head = self.head.load(.unordered);
+
+        if (current_head == current_tail) {
+            return null;
+        }
+
+        const intent = self.intents[current_head];
+        const next_head = (current_head + 1) & intent_mask;
+        self.head.store(next_head, .release);
         return intent;
+    }
+
+    pub fn reportDroppedIntents(self: *InputEngine) void {
+        const count = self.dropped_count.swap(0, .monotonic);
+        if (count > 0) {
+            logger.warn("Hook", "dropped {d} intents due to full lock-free queue", .{count});
+        }
     }
 };
 
@@ -200,6 +212,30 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
             self.alt_state = .alt_held_consumed;
             self.enqueueIntent(.close_active_window);
             return 1;
+        } else if (kbd.vkCode == self.config.key_maximize) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.toggle_active_maximize);
+            return 1;
+        } else if (kbd.vkCode == self.config.key_restore_min) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.restore_last_minimized);
+            return 1;
+        } else if (kbd.vkCode == self.config.key_focus_left) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.{ .focus_direction = .left });
+            return 1;
+        } else if (kbd.vkCode == self.config.key_focus_down) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.{ .focus_direction = .down });
+            return 1;
+        } else if (kbd.vkCode == self.config.key_focus_up) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.{ .focus_direction = .up });
+            return 1;
+        } else if (kbd.vkCode == self.config.key_focus_right) {
+            self.alt_state = .alt_held_consumed;
+            self.enqueueIntent(.{ .focus_direction = .right });
+            return 1;
         }
     }
 
@@ -223,7 +259,7 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     if (self.isAltDown() and !self.paused.load(.acquire)) {
         switch (wParam) {
             t.WM_LBUTTONDOWN => {
-                if (actionableWindowAt(mouse.pt)) |win| {
+                if (actionableWindowAt(mouse.pt, self.config)) |win| {
                     self.pending_action = .{
                         .kind = .drag,
                         .pt = pt,
@@ -234,7 +270,7 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
                 }
             },
             t.WM_RBUTTONDOWN => {
-                if (actionableWindowAt(mouse.pt)) |win| {
+                if (actionableWindowAt(mouse.pt, self.config)) |win| {
                     self.pending_action = .{
                         .kind = .resize,
                         .pt = pt,
@@ -245,13 +281,15 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
                 }
             },
             t.WM_MBUTTONDOWN => {
-                self.alt_state = .alt_held_consumed;
-                self.middle_pending = true;
-                self.enqueueIntent(.{ .minimize_at = .{ .pt = pt } });
-                return 1;
+                if (actionableWindowAt(mouse.pt, self.config) != null) {
+                    self.alt_state = .alt_held_consumed;
+                    self.middle_pending = true;
+                    self.enqueueIntent(.{ .minimize_at = .{ .pt = pt } });
+                    return 1;
+                }
             },
             t.WM_MOUSEWHEEL => {
-                if (self.config.enable_wheel_opacity) {
+                if (self.config.enable_wheel_opacity and actionableWindowAt(mouse.pt, self.config) != null) {
                     const delta_raw: i16 = @bitCast(@as(u16, @intCast((mouse.mouseData >> 16) & 0xFFFF)));
                     const step: i32 = @intCast(self.config.opacity_step);
                     const change: i32 = if (delta_raw > 0) step else -step;
@@ -319,10 +357,10 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     return t.CallNextHookEx(null, nCode, wParam, lParam);
 }
 
-fn actionableWindowAt(pt: t.POINT) ?Window {
+fn actionableWindowAt(pt: t.POINT, config: *const Config) ?Window {
     const raw_hwnd = t.WindowFromPoint(pt) orelse return null;
     const top = Window.getTrueTopLevel(raw_hwnd) orelse return null;
     const win = Window.init(top);
-    if (win.isExclusiveFullScreen()) return null;
+    if (win.isExclusiveFullScreen() or win.isIgnored(config)) return null;
     return win;
 }

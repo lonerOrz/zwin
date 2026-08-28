@@ -1,6 +1,7 @@
 const std = @import("std");
 const t = @import("win32.zig");
 const geom = @import("../calc/geometry.zig");
+const Config = @import("../domain/config.zig").Config;
 
 pub const Window = struct {
     hwnd: t.HWND,
@@ -9,17 +10,151 @@ pub const Window = struct {
         return .{ .hwnd = hwnd };
     }
 
-    // Resolve actionable top-level window, filtering tool windows, shell classes, and cloaked windows
-    pub fn getTrueTopLevel(hwnd: t.HWND) ?t.HWND {
-        var curr = hwnd;
-        if (@intFromPtr(curr) == 0) return null;
+    /// Queries the window class name into a fixed stack buffer.
+    pub fn getClassName(self: Window, out_buf: *[256]u8) ?[]const u8 {
+        var wbuf: [128]u16 = undefined;
+        const len = t.GetClassNameW(self.hwnd, &wbuf, @intCast(wbuf.len));
+        if (len <= 0) return null;
+        const u8_len = std.unicode.utf16LeToUtf8(out_buf, wbuf[0..@intCast(len)]) catch return null;
+        return out_buf[0..u8_len];
+    }
 
-        if (t.GetAncestor(curr, t.GA_ROOTOWNER)) |root_owner| {
-            curr = root_owner;
-        } else if (t.GetAncestor(curr, t.GA_ROOT)) |root| {
-            curr = root;
+    /// Queries the executable file name of the window's owning process.
+    pub fn getProcessName(self: Window, out_buf: *[t.MAX_PATH]u8) ?[]const u8 {
+        var pid: u32 = 0;
+        _ = t.GetWindowThreadProcessId(self.hwnd, &pid);
+        if (pid == 0) return null;
+
+        const h_proc = t.OpenProcess(t.PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) orelse return null;
+        defer _ = t.CloseHandle(h_proc);
+
+        var path_w: [t.MAX_PATH]u16 = undefined;
+        var size: u32 = path_w.len;
+        if (t.QueryFullProcessImageNameW(h_proc, 0, &path_w, &size) == 0 or size == 0) return null;
+
+        var full_path_u8: [t.MAX_PATH * 3]u8 = undefined;
+        const u8_len = std.unicode.utf16LeToUtf8(&full_path_u8, path_w[0..size]) catch return null;
+        const full_path = full_path_u8[0..u8_len];
+
+        const base = if (std.mem.lastIndexOfAny(u8, full_path, "\\/")) |pos| full_path[pos + 1 ..] else full_path;
+        if (base.len == 0 or base.len > out_buf.len) return null;
+        @memcpy(out_buf[0..base.len], base);
+        return out_buf[0..base.len];
+    }
+
+    /// Checks whether the window matches any configured process or class blacklist pattern.
+    pub fn isIgnored(self: Window, config: *const Config) bool {
+        if (config.ignore_classes.len > 0) {
+            var cls_buf: [256]u8 = undefined;
+            if (self.getClassName(&cls_buf)) |cls| {
+                for (config.ignore_classes) |pat| {
+                    if (geom.matchGlob(pat, cls)) return true;
+                }
+            }
         }
 
+        if (config.ignore_processes.len > 0) {
+            var proc_buf: [t.MAX_PATH]u8 = undefined;
+            if (self.getProcessName(&proc_buf)) |proc| {
+                for (config.ignore_processes) |pat| {
+                    if (geom.matchGlob(pat, proc)) return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // Context struct for zero-alloc window enumerations
+    pub const SnapCollectorContext = struct {
+        exclude_hwnd: t.HWND,
+        config: *const Config,
+        list: *geom.SnapTargetList,
+    };
+
+    pub fn collectSnapTargets(exclude_hwnd: t.HWND, config: *const Config, out_list: *geom.SnapTargetList) void {
+        out_list.len = 0;
+        var ctx = SnapCollectorContext{
+            .exclude_hwnd = exclude_hwnd,
+            .config = config,
+            .list = out_list,
+        };
+        _ = t.EnumWindows(enumSnapProc, @as(t.LPARAM, @bitCast(@intFromPtr(&ctx))));
+    }
+
+    fn enumSnapProc(hwnd: t.HWND, lparam: t.LPARAM) callconv(.winapi) t.BOOL {
+        const ctx: *SnapCollectorContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        if (hwnd == ctx.exclude_hwnd) return t.TRUE;
+        if (t.IsWindowVisible(hwnd) == 0 or t.IsIconic(hwnd) != 0) return t.TRUE;
+
+        const top = getTrueTopLevel(hwnd) orelse return t.TRUE;
+        if (top != hwnd) return t.TRUE;
+
+        const win = Window.init(top);
+        if (win.isIgnored(ctx.config)) return t.TRUE;
+
+        const bounds = win.getPhysicalBounds();
+        if (bounds.width() > 50 and bounds.height() > 50) {
+            ctx.list.append(bounds);
+            if (ctx.list.len >= geom.max_snap_targets) return t.FALSE;
+        }
+        return t.TRUE;
+    }
+
+    // Directional focus navigation context
+    pub const FocusContext = struct {
+        cur_hwnd: t.HWND,
+        cur_bounds: geom.Rect,
+        dir: geom.Direction,
+        config: *const Config,
+        best_hwnd: ?t.HWND = null,
+        best_score: i64 = std.math.maxInt(i64),
+    };
+
+    pub fn findDirectionalTarget(current_hwnd: t.HWND, dir: geom.Direction, config: *const Config) ?t.HWND {
+        const cur_win = Window.init(current_hwnd);
+        var ctx = FocusContext{
+            .cur_hwnd = current_hwnd,
+            .cur_bounds = cur_win.getPhysicalBounds(),
+            .dir = dir,
+            .config = config,
+        };
+
+        _ = t.EnumWindows(enumFocusProc, @as(t.LPARAM, @bitCast(@intFromPtr(&ctx))));
+        return ctx.best_hwnd;
+    }
+
+    fn enumFocusProc(hwnd: t.HWND, lparam: t.LPARAM) callconv(.winapi) t.BOOL {
+        const ctx: *FocusContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        if (hwnd == ctx.cur_hwnd) return t.TRUE;
+        if (t.IsWindowVisible(hwnd) == 0 or t.IsIconic(hwnd) != 0) return t.TRUE;
+
+        const top = getTrueTopLevel(hwnd) orelse return t.TRUE;
+        if (top != hwnd) return t.TRUE;
+
+        const win = Window.init(top);
+        if (win.isIgnored(ctx.config)) return t.TRUE;
+
+        const target_bounds = win.getPhysicalBounds();
+        if (geom.scoreDirectionalCandidate(ctx.cur_bounds, target_bounds, ctx.dir)) |score| {
+            if (score < ctx.best_score) {
+                ctx.best_score = score;
+                ctx.best_hwnd = top;
+            }
+        }
+        return t.TRUE;
+    }
+
+    pub fn focusWindow(hwnd: t.HWND) void {
+        _ = t.ShowWindow(hwnd, t.SW_RESTORE);
+        _ = t.SetForegroundWindow(hwnd);
+    }
+
+    // Resolve actionable top-level window, filtering tool windows, shell classes, and cloaked windows
+    pub fn getTrueTopLevel(hwnd: t.HWND) ?t.HWND {
+        if (@intFromPtr(hwnd) == 0) return null;
+
+        const curr = if (t.GetAncestor(hwnd, t.GA_ROOTOWNER)) |ro| ro else (t.GetAncestor(hwnd, t.GA_ROOT) orelse hwnd);
         if (isManageableTopLevel(curr) and !isCloaked(curr)) return curr;
         return null;
     }
@@ -27,10 +162,7 @@ pub const Window = struct {
     // Check if window is cloaked (e.g. on another virtual desktop or suspended UWP)
     fn isCloaked(hwnd: t.HWND) bool {
         var cloaked: u32 = 0;
-        if (t.DwmGetWindowAttribute(hwnd, t.DWMWA_CLOAKED, &cloaked, @sizeOf(u32)) == 0) {
-            return cloaked != 0;
-        }
-        return false;
+        return t.DwmGetWindowAttribute(hwnd, t.DWMWA_CLOAKED, &cloaked, @sizeOf(u32)) == 0 and cloaked != 0;
     }
 
     // Filter out child windows, unlisted tool windows, 0-size ghost windows, and shell system classes
@@ -38,16 +170,13 @@ pub const Window = struct {
         if (@intFromPtr(hwnd) == 0) return false;
 
         var rc: t.RECT = undefined;
-        if (t.GetWindowRect(hwnd, &rc) == 0) return false;
-        if ((rc.right - rc.left) <= 0 or (rc.bottom - rc.top) <= 0) return false;
+        if (t.GetWindowRect(hwnd, &rc) == 0 or (rc.right - rc.left) <= 0 or (rc.bottom - rc.top) <= 0) return false;
 
         const style = t.GetWindowLongPtrW(hwnd, t.GWL_STYLE);
         if ((style & t.WS_CHILD) != 0) return false;
 
         const ex_style = t.GetWindowLongPtrW(hwnd, t.GWL_EXSTYLE);
-        if ((ex_style & t.WS_EX_TOOLWINDOW) != 0 and (ex_style & t.WS_EX_APPWINDOW) == 0) {
-            return false;
-        }
+        if ((ex_style & t.WS_EX_TOOLWINDOW) != 0 and (ex_style & t.WS_EX_APPWINDOW) == 0) return false;
 
         var class_name_buf: [64]u16 = undefined;
         const len = t.GetClassNameW(hwnd, &class_name_buf, class_name_buf.len);
@@ -173,12 +302,23 @@ pub const Window = struct {
     }
 
     pub fn close(self: Window) void {
-        const SC_CLOSE: usize = 0xF060;
-        _ = t.PostMessageW(self.hwnd, t.WM_SYSCOMMAND, SC_CLOSE, 0);
+        _ = t.PostMessageW(self.hwnd, t.WM_CLOSE, 0, 0);
     }
 
     pub fn minimize(self: Window) void {
         _ = t.ShowWindow(self.hwnd, t.SW_MINIMIZE);
+    }
+
+    pub fn toggleMaximize(self: Window) void {
+        if (t.IsZoomed(self.hwnd) != 0) {
+            _ = t.ShowWindow(self.hwnd, t.SW_RESTORE);
+        } else {
+            _ = t.ShowWindow(self.hwnd, t.SW_MAXIMIZE);
+        }
+    }
+
+    pub fn isMinimized(self: Window) bool {
+        return t.IsIconic(self.hwnd) != 0;
     }
 
     pub fn ensureRestored(self: Window) void {

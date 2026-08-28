@@ -5,8 +5,6 @@ const WindowWorker = @import("../infra/worker.zig").WindowWorker;
 const Config = @import("../domain/config.zig").Config;
 const Window = @import("../platform/window.zig").Window;
 
-const snap_threshold: i32 = 20;
-
 pub const GestureState = union(enum) {
     idle,
     dragging: struct {
@@ -15,6 +13,7 @@ pub const GestureState = union(enum) {
         start_bounds: geom.Rect,
         shadow_pad: geom.Padding,
         work_area: ?geom.Rect,
+        snap_targets: geom.SnapTargetList,
         dpi: u32,
     },
     resizing: struct {
@@ -24,6 +23,7 @@ pub const GestureState = union(enum) {
         sector: geom.Sector,
         shadow_pad: geom.Padding,
         work_area: ?geom.Rect,
+        snap_targets: geom.SnapTargetList,
     },
 };
 
@@ -46,11 +46,43 @@ fn sectorToWmsz(sector: geom.Sector) usize {
     };
 }
 
+// Map 3×3 grid sector to the corresponding Win32 cursor resource ID
+fn cursorIdForSector(sector: geom.Sector) usize {
+    return switch (sector) {
+        .top_left, .bottom_right => t.IDC_SIZENWSE,
+        .top_right, .bottom_left => t.IDC_SIZENESW,
+        .left, .right => t.IDC_SIZEWE,
+        .top, .bottom => t.IDC_SIZENS,
+        .center => t.IDC_SIZEALL,
+    };
+}
+
+fn setCursorForSector(sector: geom.Sector) void {
+    const id = cursorIdForSector(sector);
+    const cur = t.LoadCursorW(null, @ptrFromInt(id));
+    _ = t.SetCursor(cur);
+}
+
+fn setCursorForDrag() void {
+    const cur = t.LoadCursorW(null, @ptrFromInt(t.IDC_SIZEALL));
+    _ = t.SetCursor(cur);
+}
+
+fn restoreCursor() void {
+    const cur = t.LoadCursorW(null, @ptrFromInt(t.IDC_ARROW));
+    _ = t.SetCursor(cur);
+}
+
 // Continuous gesture state machine for window drag and resize
 pub const GestureStateMachine = struct {
     state: GestureState = .idle,
     worker: *WindowWorker,
     config: *const Config,
+
+    // OSD size-threshold throttle: only redraw when dimensions change by ≥2px.
+    // Eliminates per-frame GDI calls during high-rate mouse movement (500–1000 Hz).
+    last_osd_w: i32 = 0,
+    last_osd_h: i32 = 0,
 
     pub fn init(worker: *WindowWorker, config: *const Config) GestureStateMachine {
         return .{ .worker = worker, .config = config };
@@ -64,14 +96,20 @@ pub const GestureStateMachine = struct {
         pad: geom.Padding,
     ) void {
         const win = Window.init(target.hwnd);
+        var snap_targets = geom.SnapTargetList{};
+        if (self.config.enable_window_snap) {
+            Window.collectSnapTargets(target.hwnd, self.config, &snap_targets);
+        }
         self.state = .{ .dragging = .{
             .target = target,
             .start_pt = cursor,
             .start_bounds = bounds,
             .shadow_pad = pad,
             .work_area = win.getMonitorWorkArea(),
+            .snap_targets = snap_targets,
             .dpi = t.GetDpiForWindow(target.hwnd),
         } };
+        setCursorForDrag();
         announceMoveSize(self.state.dragging.target.hwnd);
     }
 
@@ -84,6 +122,10 @@ pub const GestureStateMachine = struct {
         pad: geom.Padding,
     ) void {
         const win = Window.init(target.hwnd);
+        var snap_targets = geom.SnapTargetList{};
+        if (self.config.enable_window_snap) {
+            Window.collectSnapTargets(target.hwnd, self.config, &snap_targets);
+        }
         self.state = .{ .resizing = .{
             .target = target,
             .start_pt = cursor,
@@ -91,14 +133,18 @@ pub const GestureStateMachine = struct {
             .sector = sector,
             .shadow_pad = pad,
             .work_area = win.getMonitorWorkArea(),
+            .snap_targets = snap_targets,
         } };
+        setCursorForSector(sector);
         announceMoveSize(self.state.resizing.target.hwnd);
     }
 
     pub fn updateMouseMove(self: *GestureStateMachine, current_pt: geom.Point) void {
+        const app_ptr = @import("../app.zig").App.global;
         switch (self.state) {
             .idle => {},
             .dragging => |d| {
+                setCursorForDrag();
                 var a = d;
                 const dpi = t.GetDpiForWindow(a.target.hwnd);
                 if (dpi != 0 and dpi != a.dpi) {
@@ -119,7 +165,13 @@ pub const GestureStateMachine = struct {
                 };
 
                 if (a.work_area) |wa| {
-                    physical_bounds = geom.snapMoveBounds(physical_bounds, wa, snap_threshold);
+                    physical_bounds = geom.snapMoveBoundsEx(
+                        physical_bounds,
+                        wa,
+                        a.snap_targets.slice(),
+                        self.config.snap_threshold,
+                        self.config.enable_window_snap,
+                    );
                 }
 
                 const pad = a.shadow_pad;
@@ -129,6 +181,7 @@ pub const GestureStateMachine = struct {
                 } });
             },
             .resizing => |r| {
+                setCursorForSector(r.sector);
                 const delta: geom.Point = .{
                     .x = current_pt.x - r.start_pt.x,
                     .y = current_pt.y - r.start_pt.y,
@@ -142,15 +195,36 @@ pub const GestureStateMachine = struct {
                 );
 
                 if (r.work_area) |wa| {
-                    rc = geom.snapResizeBounds(rc, wa, r.sector, snap_threshold);
+                    rc = geom.snapResizeBoundsEx(
+                        rc,
+                        wa,
+                        r.snap_targets.slice(),
+                        r.sector,
+                        self.config.snap_threshold,
+                        self.config.enable_window_snap,
+                    );
                 }
 
                 const pad = r.shadow_pad;
+                const width = rc.width();
+                const height = rc.height();
+
+                // Throttle OSD updates: only redraw when size changes by ≥2px
+                const size_changed = (@abs(width - self.last_osd_w) >= 2) or
+                    (@abs(height - self.last_osd_h) >= 2);
+                if (size_changed) {
+                    if (app_ptr) |app| {
+                        self.last_osd_w = width;
+                        self.last_osd_h = height;
+                        app.osd.showResize(current_pt, width, height);
+                    }
+                }
+
                 self.worker.postStreaming(r.target, .{ .resize = .{
                     .x = rc.left - pad.l,
                     .y = rc.top - pad.t,
-                    .w = rc.width() + pad.l + pad.r,
-                    .h = rc.height() + pad.t + pad.b,
+                    .w = width + pad.l + pad.r,
+                    .h = height + pad.t + pad.b,
                     .wmsz = sectorToWmsz(r.sector),
                 } });
             },
@@ -158,16 +232,23 @@ pub const GestureStateMachine = struct {
     }
 
     pub fn finish(self: *GestureStateMachine) void {
+        const app_ptr = @import("../app.zig").App.global;
+        if (app_ptr) |app| app.osd.hide();
+
         switch (self.state) {
             .dragging => |d| endMoveSize(d.target.hwnd),
             .resizing => |r| endMoveSize(r.target.hwnd),
             .idle => {},
         }
         self.state = .idle;
+        restoreCursor();
     }
 
     // Abort gesture on ESC and restore initial window bounds
     pub fn abort(self: *GestureStateMachine) void {
+        const app_ptr = @import("../app.zig").App.global;
+        if (app_ptr) |app| app.osd.hide();
+
         switch (self.state) {
             .idle => return,
             .dragging => |d| {

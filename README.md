@@ -1,20 +1,23 @@
 # zwin
 
-A lightweight Windows utility to move and resize windows from anywhere by holding `Alt`. Written in Zig using the native Win32 API.
+A lightweight Windows utility to move, resize, snap, and manage windows from anywhere by holding `Alt`. Written in Zig using the native Win32 API.
 
 ## Keybindings
 
-| Shortcut                             | Action                                      |
-| :----------------------------------- | :------------------------------------------ |
-| **`Alt` + Left Click Drag**          | Move window                                 |
-| **`Alt` + Right Click Drag**         | Resize window (from 9 screen sectors)       |
-| **`Alt` + Middle Click**             | Minimize window                             |
-| **`Alt` + Mouse Wheel**              | Change window opacity                       |
-| **`Alt` + Click** _(without moving)_ | Normal click passed to the underlying app   |
-| **`Alt + C`**                        | Center window on current monitor            |
-| **`Alt + T`**                        | Toggle always-on-top                        |
-| **`Alt + Q`**                        | Close window                                |
-| **`ESC`** _(while dragging)_         | Cancel movement and restore window position |
+| Shortcut                             | Action                                            |
+| :----------------------------------- | :------------------------------------------------ |
+| **`Alt` + Left Click Drag**          | Move window (with magnetic screen/window snap)    |
+| **`Alt` + Right Click Drag**         | Resize window (from 9 screen sectors)             |
+| **`Alt` + Middle Click**             | Minimize window                                   |
+| **`Alt` + Mouse Wheel**              | Change window opacity                             |
+| **`Alt` + Click** _(without moving)_ | Normal click passed through to underlying app     |
+| **`Alt + C`**                        | Center window on current monitor                  |
+| **`Alt + T`**                        | Toggle always-on-top                              |
+| **`Alt + M`**                        | Toggle maximize / restore                         |
+| **`Alt + N`**                        | Restore most recently minimized window            |
+| **`Alt + H / J / K / L`**            | Directional focus navigation (Left/Down/Up/Right) |
+| **`Alt + Q`**                        | Close window                                      |
+| **`ESC`** _(while dragging)_         | Cancel movement and restore window position       |
 
 ## Download & Usage
 
@@ -34,18 +37,32 @@ Settings are saved in `%APPDATA%\zwin\config.json`. The file is automatically re
   "key_center": "C",
   "key_topmost": "T",
   "key_close": "Q",
+  "key_maximize": "M",
+  "key_restore_min": "N",
+  "key_focus_left": "H",
+  "key_focus_down": "J",
+  "key_focus_up": "K",
+  "key_focus_right": "L",
   "enable_border": true,
   "enable_wheel_opacity": true,
   "enable_autostart": false,
   "enable_elevated": false,
+  "enable_window_snap": true,
+  "snap_threshold": 18,
   "opacity_step": 15,
   "active_border_hex": "#FF8800",
   "min_window_width": 120,
   "min_window_height": 100,
-  "log_max_days": 7
+  "log_max_days": 7,
+  "ignore_processes": ["Photoshop.exe", "*blender*.exe", "mstsc.exe"],
+  "ignore_classes": ["UnityWndClass", "UnrealWindow"]
 }
 ```
 
+### Settings Reference
+
+- **`enable_window_snap` / `snap_threshold`**: Enables magnetic edge snapping between moving/resizing windows and other visible windows, in addition to monitor work areas. `snap_threshold` specifies the distance in pixels within which edges snap magnetically.
+- **`ignore_processes` / `ignore_classes`**: Blacklist filtering. Windows matching these process or class name patterns bypass all interception, letting native `Alt` clicks and shortcuts pass directly to the target application. Supports `*` and `?` wildcard patterns.
 - **`enable_elevated`**: Allows managing elevated windows like Task Manager. Toggling from the tray menu restarts immediately; editing the JSON applies on next start. When enabled together with `enable_autostart`, a Windows scheduled task is used for silent startup.
 - **`enable_border`**: Draws an accent border on the active window (Windows 11 only).
 

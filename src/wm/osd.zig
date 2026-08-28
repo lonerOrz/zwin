@@ -1,0 +1,215 @@
+const std = @import("std");
+const t = @import("../platform/win32.zig");
+const geom = @import("../calc/geometry.zig");
+const Language = @import("../infra/i18n.zig").Language;
+
+const OSD_WIDTH: i32 = 260;
+const OSD_HEIGHT: i32 = 48;
+const TIMER_OSD_AUTOHIDE: usize = 3001;
+
+// Transparent color key for pure text HUD (RGB 1, 1, 1)
+const TRANSPARENT_KEY: u32 = 0x00010101;
+
+pub const OsdKind = enum {
+    none,
+    resize,
+    opacity,
+    topmost,
+};
+
+pub const OsdManager = struct {
+    hwnd: ?t.HWND = null,
+    visible: bool = false,
+    text_buf: [64:0]u16 = undefined,
+    text_len: usize = 0,
+    font: ?t.HFONT = null,
+    kind: OsdKind = .none,
+    bg_brush: ?t.HBRUSH = null,
+
+    pub fn init(hinst: ?t.HINSTANCE) OsdManager {
+        var self = OsdManager{};
+        self.createWindow(hinst);
+
+        // High-contrast clean font
+        self.font = t.CreateFontW(
+            -18,
+            0,
+            0,
+            0,
+            700,
+            0,
+            0,
+            0,
+            t.DEFAULT_CHARSET,
+            t.OUT_DEFAULT_PRECIS,
+            t.CLIP_DEFAULT_PRECIS,
+            t.CLEARTYPE_QUALITY,
+            t.DEFAULT_PITCH | t.FF_DONTCARE,
+            std.unicode.utf8ToUtf16LeStringLiteral("Segoe UI"),
+        );
+
+        self.bg_brush = t.CreateSolidBrush(TRANSPARENT_KEY);
+        return self;
+    }
+
+    pub fn deinit(self: *OsdManager) void {
+        if (self.hwnd) |hwnd| {
+            _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);
+            _ = t.DestroyWindow(hwnd);
+        }
+        if (self.font) |f| _ = t.DeleteObject(f);
+        if (self.bg_brush) |b| _ = t.DeleteObject(b);
+        self.* = undefined;
+    }
+
+    fn createWindow(self: *OsdManager, hinst: ?t.HINSTANCE) void {
+        const class_name = std.unicode.utf8ToUtf16LeStringLiteral("zwin_OsdWindow");
+        const wnd_class = t.WNDCLASSEXW{
+            .lpfnWndProc = osdWndProc,
+            .hInstance = hinst,
+            .lpszClassName = class_name,
+        };
+        _ = t.RegisterClassExW(&wnd_class);
+
+        // Do not use WS_EX_TRANSPARENT to avoid DWM skipping paint with color keying
+        self.hwnd = t.CreateWindowExW(
+            t.WS_EX_TOPMOST | t.WS_EX_TOOLWINDOW | t.WS_EX_LAYERED | t.WS_EX_NOACTIVATE,
+            class_name,
+            class_name,
+            t.WS_POPUP,
+            0,
+            0,
+            OSD_WIDTH,
+            OSD_HEIGHT,
+            null,
+            null,
+            hinst,
+            null,
+        );
+
+        if (self.hwnd) |hwnd| {
+            // Cut out background color completely
+            _ = t.SetLayeredWindowAttributes(hwnd, TRANSPARENT_KEY, 0, t.LWA_COLORKEY);
+        }
+    }
+
+    pub fn showResize(self: *OsdManager, cursor: geom.Point, w: i32, h: i32) void {
+        var buf: [32]u8 = undefined;
+        const u8_str = std.fmt.bufPrint(&buf, "{d} × {d}", .{ w, h }) catch return;
+        self.setText(u8_str);
+        self.kind = .resize;
+        self.repositionAndShow(cursor.x + 20, cursor.y + 20, 0);
+    }
+
+    pub fn showOpacity(self: *OsdManager, cursor: geom.Point, alpha: u8, lang: Language) void {
+        const percent = @divTrunc(@as(u32, alpha) * 100, 255);
+        var buf_u8: [64]u8 = undefined;
+        const label = if (lang == .zh_CN)
+            std.fmt.bufPrint(&buf_u8, "透明度: {d}%", .{percent}) catch return
+        else
+            std.fmt.bufPrint(&buf_u8, "Opacity: {d}%", .{percent}) catch return;
+
+        self.setText(label);
+        self.kind = .opacity;
+        self.repositionAndShow(cursor.x + 20, cursor.y + 20, 1500);
+    }
+
+    pub fn showTopmost(self: *OsdManager, is_topmost: bool, lang: Language) void {
+        var cursor: t.POINT = undefined;
+        _ = t.GetCursorPos(&cursor);
+
+        const text = if (lang == .zh_CN)
+            (if (is_topmost) "置顶: 开启" else "置顶: 关闭")
+        else
+            (if (is_topmost) "Topmost: ON" else "Topmost: OFF");
+
+        self.setText(text);
+        self.kind = .topmost;
+        self.repositionAndShow(cursor.x + 20, cursor.y + 20, 1500);
+    }
+
+    pub fn hide(self: *OsdManager) void {
+        const hwnd = self.hwnd orelse return;
+        if (self.visible) {
+            _ = t.ShowWindow(hwnd, 0);
+            self.visible = false;
+            self.kind = .none;
+        }
+    }
+
+    fn setText(self: *OsdManager, text_u8: []const u8) void {
+        const len = std.unicode.utf8ToUtf16Le(&self.text_buf, text_u8) catch return;
+        self.text_buf[len] = 0;
+        self.text_len = len;
+    }
+
+    fn repositionAndShow(self: *OsdManager, x: i32, y: i32, auto_hide_ms: u32) void {
+        const hwnd = self.hwnd orelse return;
+
+        // Force to top of Z-order with SWP_FRAMECHANGED
+        _ = t.SetWindowPos(
+            hwnd,
+            t.HWND_TOPMOST,
+            x,
+            y,
+            OSD_WIDTH,
+            OSD_HEIGHT,
+            t.SWP_NOACTIVATE | t.SWP_SHOWWINDOW | t.SWP_FRAMECHANGED,
+        );
+        _ = t.InvalidateRect(hwnd, null, 1);
+        self.visible = true;
+
+        _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);
+        if (auto_hide_ms > 0) {
+            _ = t.SetTimer(hwnd, TIMER_OSD_AUTOHIDE, auto_hide_ms, null);
+        }
+    }
+};
+
+fn osdWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winapi) t.LRESULT {
+    switch (msg) {
+        t.WM_TIMER => {
+            if (wParam == TIMER_OSD_AUTOHIDE) {
+                _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);
+                _ = t.ShowWindow(hwnd, 0);
+            }
+        },
+        t.WM_PAINT => {
+            var ps: t.PAINTSTRUCT = undefined;
+            const hdc = t.BeginPaint(hwnd, &ps) orelse return 0;
+            defer _ = t.EndPaint(hwnd, &ps);
+
+            const app_ptr = @import("../app.zig").App.global;
+            const osd = if (app_ptr) |a| &a.osd else return 0;
+
+            // Fill entire rect with color key brush (borderless transparent cutout)
+            if (osd.bg_brush) |brush| {
+                const rc_full = t.RECT{ .left = 0, .top = 0, .right = OSD_WIDTH, .bottom = OSD_HEIGHT };
+                _ = t.FillRect(hdc, &rc_full, brush);
+            }
+
+            _ = t.SetBkMode(hdc, t.TRANSPARENT);
+
+            // Draw text with drop shadow
+            if (osd.font) |f| {
+                const old_font = t.SelectObject(hdc, f);
+                defer if (old_font) |of| {
+                    _ = t.SelectObject(hdc, of);
+                };
+
+                // Drop shadow for legibility on white backgrounds
+                _ = t.SetTextColor(hdc, 0x00000000);
+                var rc_shadow = t.RECT{ .left = 2, .top = 2, .right = OSD_WIDTH + 2, .bottom = OSD_HEIGHT + 2 };
+                _ = t.DrawTextW(hdc, &osd.text_buf, @intCast(osd.text_len), &rc_shadow, t.DT_CENTER | t.DT_VCENTER | t.DT_SINGLELINE);
+
+                // High-contrast foreground text
+                _ = t.SetTextColor(hdc, 0x00FFFFFF);
+                var rc_text = t.RECT{ .left = 0, .top = 0, .right = OSD_WIDTH, .bottom = OSD_HEIGHT };
+                _ = t.DrawTextW(hdc, &osd.text_buf, @intCast(osd.text_len), &rc_text, t.DT_CENTER | t.DT_VCENTER | t.DT_SINGLELINE);
+            }
+            return 0;
+        },
+        else => return t.DefWindowProcW(hwnd, msg, wParam, lParam),
+    }
+    return 0;
+}

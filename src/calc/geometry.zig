@@ -11,12 +11,20 @@ pub const Rect = struct {
     right: i32,
     bottom: i32,
 
-    pub fn width(self: Rect) i32 {
+    pub inline fn width(self: Rect) i32 {
         return self.right - self.left;
     }
 
-    pub fn height(self: Rect) i32 {
+    pub inline fn height(self: Rect) i32 {
         return self.bottom - self.top;
+    }
+
+    pub inline fn centerX(self: Rect) i32 {
+        return self.left + @divTrunc(self.width(), 2);
+    }
+
+    pub inline fn centerY(self: Rect) i32 {
+        return self.top + @divTrunc(self.height(), 2);
     }
 };
 
@@ -25,6 +33,31 @@ pub const Padding = struct {
     t: i32 = 0,
     r: i32 = 0,
     b: i32 = 0,
+};
+
+pub const Direction = enum {
+    left,
+    down,
+    up,
+    right,
+};
+
+pub const max_snap_targets: usize = 32;
+
+pub const SnapTargetList = struct {
+    rects: [max_snap_targets]Rect = undefined,
+    len: usize = 0,
+
+    pub fn append(self: *SnapTargetList, rc: Rect) void {
+        if (self.len < max_snap_targets) {
+            self.rects[self.len] = rc;
+            self.len += 1;
+        }
+    }
+
+    pub fn slice(self: *const SnapTargetList) []const Rect {
+        return self.rects[0..self.len];
+    }
 };
 
 pub const Sector = enum {
@@ -149,64 +182,232 @@ pub fn calculateResizedRect(
     return rc;
 }
 
-// Snap moving window edges to work area within threshold preserving size
-pub fn snapMoveBounds(bounds: Rect, wa: Rect, threshold: i32) Rect {
+// Check if two ranges [a1, a2] and [b1, b2] overlap or are near each other
+inline fn isNearOrOverlap(a1: i32, a2: i32, b1: i32, b2: i32, tolerance: i32) bool {
+    return (a1 <= b2 + tolerance) and (a2 >= b1 - tolerance);
+}
+
+// Snap moving window edges to work area AND other window boundaries
+// Collect snap targets once at gesture start; called 0 times on the hot path.
+pub fn snapMoveBoundsEx(
+    bounds: Rect,
+    wa: ?Rect,
+    other_windows: []const Rect,
+    threshold: i32,
+    enable_window_snap: bool,
+) Rect {
     var res = bounds;
     const w = bounds.width();
     const h = bounds.height();
 
-    if (@abs(bounds.left - wa.left) <= threshold) {
-        res.left = wa.left;
-        res.right = wa.left + w;
-    } else if (@abs(bounds.right - wa.right) <= threshold) {
-        res.right = wa.right;
-        res.left = wa.right - w;
+    var best_dx: ?i32 = null;
+    var min_dist_x: u32 = @as(u32, @intCast(@max(threshold, 0))) + 1;
+
+    var best_dy: ?i32 = null;
+    var min_dist_y: u32 = @as(u32, @intCast(@max(threshold, 0))) + 1;
+
+    // 1. Work area edge snapping
+    if (wa) |area| {
+        const d_left_x = bounds.left - area.left;
+        if (@abs(d_left_x) < min_dist_x) {
+            min_dist_x = @abs(d_left_x);
+            best_dx = area.left - bounds.left;
+        }
+        const d_right_x = bounds.right - area.right;
+        if (@abs(d_right_x) < min_dist_x) {
+            min_dist_x = @abs(d_right_x);
+            best_dx = area.right - bounds.right;
+        }
+        const d_top_y = bounds.top - area.top;
+        if (@abs(d_top_y) < min_dist_y) {
+            min_dist_y = @abs(d_top_y);
+            best_dy = area.top - bounds.top;
+        }
+        const d_bottom_y = bounds.bottom - area.bottom;
+        if (@abs(d_bottom_y) < min_dist_y) {
+            min_dist_y = @abs(d_bottom_y);
+            best_dy = area.bottom - bounds.bottom;
+        }
     }
 
-    if (@abs(bounds.top - wa.top) <= threshold) {
-        res.top = wa.top;
-        res.bottom = wa.top + h;
-    } else if (@abs(bounds.bottom - wa.bottom) <= threshold) {
-        res.bottom = wa.bottom;
-        res.top = wa.bottom - h;
+    // 2. Magnetic snapping to other windows
+    if (enable_window_snap) {
+        for (other_windows) |other| {
+            // Check Y overlap for X-axis snapping
+            if (isNearOrOverlap(bounds.top, bounds.bottom, other.top, other.bottom, threshold)) {
+                const d1: u32 = @abs(bounds.left - other.right);
+                if (d1 < min_dist_x) {
+                    min_dist_x = d1;
+                    best_dx = other.right - bounds.left;
+                }
+                const d2: u32 = @abs(bounds.right - other.left);
+                if (d2 < min_dist_x) {
+                    min_dist_x = d2;
+                    best_dx = other.left - bounds.right;
+                }
+                const d3: u32 = @abs(bounds.left - other.left);
+                if (d3 < min_dist_x) {
+                    min_dist_x = d3;
+                    best_dx = other.left - bounds.left;
+                }
+                const d4: u32 = @abs(bounds.right - other.right);
+                if (d4 < min_dist_x) {
+                    min_dist_x = d4;
+                    best_dx = other.right - bounds.right;
+                }
+            }
+
+            // Check X overlap for Y-axis snapping
+            if (isNearOrOverlap(bounds.left, bounds.right, other.left, other.right, threshold)) {
+                const d1: u32 = @abs(bounds.top - other.bottom);
+                if (d1 < min_dist_y) {
+                    min_dist_y = d1;
+                    best_dy = other.bottom - bounds.top;
+                }
+                const d2: u32 = @abs(bounds.bottom - other.top);
+                if (d2 < min_dist_y) {
+                    min_dist_y = d2;
+                    best_dy = other.top - bounds.bottom;
+                }
+                const d3: u32 = @abs(bounds.top - other.top);
+                if (d3 < min_dist_y) {
+                    min_dist_y = d3;
+                    best_dy = other.top - bounds.top;
+                }
+                const d4: u32 = @abs(bounds.bottom - other.bottom);
+                if (d4 < min_dist_y) {
+                    min_dist_y = d4;
+                    best_dy = other.bottom - bounds.bottom;
+                }
+            }
+        }
+    }
+
+    if (best_dx) |dx| {
+        res.left += dx;
+        res.right = res.left + w;
+    }
+    if (best_dy) |dy| {
+        res.top += dy;
+        res.bottom = res.top + h;
     }
 
     return res;
 }
 
-// Snap resizing window edges to work area based on active sector
-pub fn snapResizeBounds(bounds: Rect, wa: Rect, sector: Sector, threshold: i32) Rect {
+// Snap resizing window edges to work area AND other window boundaries
+pub fn snapResizeBoundsEx(
+    bounds: Rect,
+    wa: ?Rect,
+    other_windows: []const Rect,
+    sector: Sector,
+    threshold: i32,
+    enable_window_snap: bool,
+) Rect {
     var res = bounds;
 
-    switch (sector) {
-        .left, .top_left, .bottom_left, .center => {
-            if (@abs(res.left - wa.left) <= threshold) res.left = wa.left;
-        },
-        else => {},
+    if (wa) |area| {
+        switch (sector) {
+            .left, .top_left, .bottom_left, .center => {
+                if (@abs(res.left - area.left) <= threshold) res.left = area.left;
+            },
+            else => {},
+        }
+        switch (sector) {
+            .right, .top_right, .bottom_right, .center => {
+                if (@abs(res.right - area.right) <= threshold) res.right = area.right;
+            },
+            else => {},
+        }
+        switch (sector) {
+            .top, .top_left, .top_right, .center => {
+                if (@abs(res.top - area.top) <= threshold) res.top = area.top;
+            },
+            else => {},
+        }
+        switch (sector) {
+            .bottom, .bottom_left, .bottom_right, .center => {
+                if (@abs(res.bottom - area.bottom) <= threshold) res.bottom = area.bottom;
+            },
+            else => {},
+        }
     }
 
-    switch (sector) {
-        .right, .top_right, .bottom_right, .center => {
-            if (@abs(res.right - wa.right) <= threshold) res.right = wa.right;
-        },
-        else => {},
-    }
-
-    switch (sector) {
-        .top, .top_left, .top_right, .center => {
-            if (@abs(res.top - wa.top) <= threshold) res.top = wa.top;
-        },
-        else => {},
-    }
-
-    switch (sector) {
-        .bottom, .bottom_left, .bottom_right, .center => {
-            if (@abs(res.bottom - wa.bottom) <= threshold) res.bottom = wa.bottom;
-        },
-        else => {},
+    if (enable_window_snap) {
+        for (other_windows) |other| {
+            switch (sector) {
+                .left, .top_left, .bottom_left => {
+                    if (isNearOrOverlap(res.top, res.bottom, other.top, other.bottom, threshold)) {
+                        if (@abs(res.left - other.right) <= threshold) res.left = other.right;
+                        if (@abs(res.left - other.left) <= threshold) res.left = other.left;
+                    }
+                },
+                .right, .top_right, .bottom_right => {
+                    if (isNearOrOverlap(res.top, res.bottom, other.top, other.bottom, threshold)) {
+                        if (@abs(res.right - other.left) <= threshold) res.right = other.left;
+                        if (@abs(res.right - other.right) <= threshold) res.right = other.right;
+                    }
+                },
+                else => {},
+            }
+            switch (sector) {
+                .top, .top_left, .top_right => {
+                    if (isNearOrOverlap(res.left, res.right, other.left, other.right, threshold)) {
+                        if (@abs(res.top - other.bottom) <= threshold) res.top = other.bottom;
+                        if (@abs(res.top - other.top) <= threshold) res.top = other.top;
+                    }
+                },
+                .bottom, .bottom_left, .bottom_right => {
+                    if (isNearOrOverlap(res.left, res.right, other.left, other.right, threshold)) {
+                        if (@abs(res.bottom - other.top) <= threshold) res.bottom = other.top;
+                        if (@abs(res.bottom - other.bottom) <= threshold) res.bottom = other.bottom;
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     return res;
+}
+
+// Distance score for directional navigation: lower is better.
+// Returns null when the candidate is not in the requested direction.
+pub fn scoreDirectionalCandidate(current: Rect, candidate: Rect, dir: Direction) ?i64 {
+    const cur_cx = current.centerX();
+    const cur_cy = current.centerY();
+    const cand_cx = candidate.centerX();
+    const cand_cy = candidate.centerY();
+
+    const dx = cand_cx - cur_cx;
+    const dy = cand_cy - cur_cy;
+
+    switch (dir) {
+        .left => {
+            if (dx >= -10) return null;
+            const primary: i64 = @abs(dx);
+            const secondary: i64 = @abs(dy);
+            return primary + secondary * 2;
+        },
+        .right => {
+            if (dx <= 10) return null;
+            const primary: i64 = @abs(dx);
+            const secondary: i64 = @abs(dy);
+            return primary + secondary * 2;
+        },
+        .up => {
+            if (dy >= -10) return null;
+            const primary: i64 = @abs(dy);
+            const secondary: i64 = @abs(dx);
+            return primary + secondary * 2;
+        },
+        .down => {
+            if (dy <= 10) return null;
+            const primary: i64 = @abs(dy);
+            const secondary: i64 = @abs(dx);
+            return primary + secondary * 2;
+        },
+    }
 }
 
 test "calculateSector 3x3 division" {
@@ -249,30 +450,109 @@ test "calculateResizedRect center all-directions expand" {
     try std.testing.expectEqual(@as(i32, 330), res.bottom);
 }
 
-test "snapMoveBounds snaps edges within threshold preserving size" {
-    const wa: Rect = .{ .left = 0, .top = 0, .right = 1920, .bottom = 1040 };
-    const near_left: Rect = .{ .left = 12, .top = 500, .right = 212, .bottom = 600 };
-    const snapped = snapMoveBounds(near_left, wa, 20);
-    try std.testing.expectEqual(@as(i32, 0), snapped.left);
-    try std.testing.expectEqual(@as(i32, 200), snapped.width());
+test "Window to window magnetic snapping" {
+    const wa: Rect = .{ .left = 0, .top = 0, .right = 1920, .bottom = 1080 };
+    const win_a: Rect = .{ .left = 100, .top = 100, .right = 500, .bottom = 600 };
+    const others = [_]Rect{win_a};
 
-    const far: Rect = .{ .left = 900, .top = 400, .right = 1100, .bottom = 500 };
-    const untouched = snapMoveBounds(far, wa, 20);
-    try std.testing.expectEqual(far, untouched);
+    const moving_b: Rect = .{ .left = 508, .top = 120, .right = 908, .bottom = 620 };
+    const snapped = snapMoveBoundsEx(moving_b, wa, &others, 15, true);
+
+    try std.testing.expectEqual(@as(i32, 500), snapped.left);
+    try std.testing.expectEqual(@as(i32, 900), snapped.right);
 }
 
-test "snapResizeBounds snaps only the dragged edges" {
-    const wa: Rect = .{ .left = 0, .top = 0, .right = 1920, .bottom = 1040 };
-    const rc: Rect = .{ .left = 10, .top = 8, .right = 1902, .bottom = 1035 };
-    const res = snapResizeBounds(rc, wa, .center, 20);
-    try std.testing.expectEqual(@as(i32, 0), res.left);
-    try std.testing.expectEqual(@as(i32, 0), res.top);
-    try std.testing.expectEqual(@as(i32, 1920), res.right);
-    try std.testing.expectEqual(@as(i32, 1040), res.bottom);
+test "Directional candidate scoring" {
+    const cur: Rect = .{ .left = 500, .top = 500, .right = 700, .bottom = 700 };
+    const left_win: Rect = .{ .left = 100, .top = 500, .right = 300, .bottom = 700 };
+    const right_win: Rect = .{ .left = 900, .top = 500, .right = 1100, .bottom = 700 };
 
-    const br_only: Rect = .{ .left = 100, .top = 100, .right = 1910, .bottom = 1050 };
-    const br_res = snapResizeBounds(br_only, wa, .bottom_right, 20);
-    try std.testing.expectEqual(@as(i32, 100), br_res.left);
-    try std.testing.expectEqual(@as(i32, 1920), br_res.right);
-    try std.testing.expectEqual(@as(i32, 1040), br_res.bottom);
+    try std.testing.expect(scoreDirectionalCandidate(cur, left_win, .left) != null);
+    try std.testing.expect(scoreDirectionalCandidate(cur, left_win, .right) == null);
+    try std.testing.expect(scoreDirectionalCandidate(cur, right_win, .right) != null);
+    try std.testing.expect(scoreDirectionalCandidate(cur, right_win, .left) == null);
+}
+
+test "Rect centerX/centerY" {
+    const r: Rect = .{ .left = 100, .top = 200, .right = 300, .bottom = 400 };
+    try std.testing.expectEqual(@as(i32, 200), r.centerX());
+    try std.testing.expectEqual(@as(i32, 300), r.centerY());
+}
+
+test "SnapTargetList capacity and slice" {
+    var list = SnapTargetList{};
+    try std.testing.expectEqual(@as(usize, 0), list.len);
+    list.append(.{ .left = 0, .top = 0, .right = 100, .bottom = 100 });
+    try std.testing.expectEqual(@as(usize, 1), list.len);
+    try std.testing.expectEqual(@as(i32, 0), list.slice()[0].left);
+}
+
+test "SnapTargetList respects max capacity" {
+    var list = SnapTargetList{};
+    var i: usize = 0;
+    while (i < max_snap_targets + 5) : (i += 1) {
+        list.append(.{ .left = @intCast(i), .top = 0, .right = @intCast(i + 10), .bottom = 0 });
+    }
+    try std.testing.expectEqual(max_snap_targets, list.len);
+}
+
+test "snapResizeBoundsEx snaps to adjacent window edge" {
+    const wa: Rect = .{ .left = 0, .top = 0, .right = 1920, .bottom = 1080 };
+    const win_a: Rect = .{ .left = 0, .top = 0, .right = 900, .bottom = 1080 };
+    const others = [_]Rect{win_a};
+
+    const rc: Rect = .{ .left = 908, .top = 100, .right = 1008, .bottom = 500 };
+    const snapped = snapResizeBoundsEx(rc, wa, &others, .left, 15, true);
+    try std.testing.expectEqual(@as(i32, 900), snapped.left);
+}
+
+test "snapMoveBoundsEx with no snap targets is identity at distance" {
+    const wa: Rect = .{ .left = 0, .top = 0, .right = 1920, .bottom = 1080 };
+    const far: Rect = .{ .left = 500, .top = 300, .right = 700, .bottom = 500 };
+    const others: [0]Rect = undefined;
+    const result = snapMoveBoundsEx(far, wa, &others, 15, true);
+    try std.testing.expectEqual(far, result);
+}
+
+/// Matches text against a wildcard pattern supporting '*' (any chars) and '?' (single char).
+/// Case-insensitive, iterative, zero-allocation.
+pub fn matchGlob(pattern: []const u8, text: []const u8) bool {
+    var p_idx: usize = 0;
+    var t_idx: usize = 0;
+    var star_idx: ?usize = null;
+    var match_idx: usize = 0;
+
+    while (t_idx < text.len) {
+        if (p_idx < pattern.len and (pattern[p_idx] == '?' or std.ascii.toLower(pattern[p_idx]) == std.ascii.toLower(text[t_idx]))) {
+            p_idx += 1;
+            t_idx += 1;
+        } else if (p_idx < pattern.len and pattern[p_idx] == '*') {
+            star_idx = p_idx;
+            match_idx = t_idx;
+            p_idx += 1;
+        } else if (star_idx) |s_idx| {
+            p_idx = s_idx + 1;
+            match_idx += 1;
+            t_idx = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while (p_idx < pattern.len and pattern[p_idx] == '*') {
+        p_idx += 1;
+    }
+
+    return p_idx == pattern.len;
+}
+
+test "matchGlob pattern matching" {
+    try std.testing.expect(matchGlob("*.exe", "photoshop.exe"));
+    try std.testing.expect(matchGlob("*.EXE", "Photoshop.exe"));
+    try std.testing.expect(matchGlob("*blender*", "C:\\Program Files\\Blender Foundation\\blender.exe"));
+    try std.testing.expect(matchGlob("Unity?ndClass", "UnityWndClass"));
+    try std.testing.expect(!matchGlob("*.dll", "photoshop.exe"));
+    try std.testing.expect(matchGlob("*", "anything"));
+    try std.testing.expect(matchGlob("", ""));
+    try std.testing.expect(!matchGlob("", "a"));
 }

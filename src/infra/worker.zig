@@ -51,12 +51,19 @@ pub const WindowWorker = struct {
         self.thread = null;
     }
 
-    // Invalidate all queued operations from previous interaction sessions
+    // Increment session and clear streaming slot — call at the end of a gesture
     pub fn invalidateSession(self: *WindowWorker) u64 {
         t.AcquireSRWLockExclusive(&self.lock);
         defer t.ReleaseSRWLockExclusive(&self.lock);
         self.active_session_id +%= 1;
         self.streaming_slot = null;
+        return self.active_session_id;
+    }
+
+    // Read-only snapshot of current session — safe to call from any context, no side effects
+    pub fn fetchSessionId(self: *WindowWorker) u64 {
+        t.AcquireSRWLockExclusive(&self.lock);
+        defer t.ReleaseSRWLockExclusive(&self.lock);
         return self.active_session_id;
     }
 
@@ -156,33 +163,10 @@ pub const WindowWorker = struct {
                     m.y,
                     0,
                     0,
-                    t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER,
+                    t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER | t.SWP_NOSENDCHANGING | t.SWP_DEFERERASE,
                 );
             },
             .resize => |r| {
-                // Allow grid-aware windows (terminals) to adjust sizing bounds via WM_SIZING
-                var rc: t.RECT = .{ .left = r.x, .top = r.y, .right = r.x + r.w, .bottom = r.y + r.h };
-                var smto_result: usize = 0;
-                if (r.wmsz != 0 and t.SendMessageTimeoutW(
-                    hwnd,
-                    t.WM_SIZING,
-                    r.wmsz,
-                    @bitCast(@intFromPtr(&rc)),
-                    t.SMTO_ABORTIFHUNG,
-                    32,
-                    &smto_result,
-                ) != 0) {
-                    _ = t.SetWindowPos(
-                        hwnd,
-                        null,
-                        rc.left,
-                        rc.top,
-                        rc.right - rc.left,
-                        rc.bottom - rc.top,
-                        t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER,
-                    );
-                    return;
-                }
                 _ = t.SetWindowPos(
                     hwnd,
                     null,
@@ -190,7 +174,7 @@ pub const WindowWorker = struct {
                     r.y,
                     r.w,
                     r.h,
-                    t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER,
+                    t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER | t.SWP_NOSENDCHANGING | t.SWP_DEFERERASE,
                 );
             },
         }
