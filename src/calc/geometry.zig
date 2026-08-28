@@ -182,66 +182,6 @@ pub fn calculateResizedRect(
     return rc;
 }
 
-// Snap moving window edges to work area within threshold preserving size
-pub fn snapMoveBounds(bounds: Rect, wa: Rect, threshold: i32) Rect {
-    var res = bounds;
-    const w = bounds.width();
-    const h = bounds.height();
-
-    if (@abs(bounds.left - wa.left) <= threshold) {
-        res.left = wa.left;
-        res.right = wa.left + w;
-    } else if (@abs(bounds.right - wa.right) <= threshold) {
-        res.right = wa.right;
-        res.left = wa.right - w;
-    }
-
-    if (@abs(bounds.top - wa.top) <= threshold) {
-        res.top = wa.top;
-        res.bottom = wa.top + h;
-    } else if (@abs(bounds.bottom - wa.bottom) <= threshold) {
-        res.bottom = wa.bottom;
-        res.top = wa.bottom - h;
-    }
-
-    return res;
-}
-
-// Snap resizing window edges to work area based on active sector
-pub fn snapResizeBounds(bounds: Rect, wa: Rect, sector: Sector, threshold: i32) Rect {
-    var res = bounds;
-
-    switch (sector) {
-        .left, .top_left, .bottom_left, .center => {
-            if (@abs(res.left - wa.left) <= threshold) res.left = wa.left;
-        },
-        else => {},
-    }
-
-    switch (sector) {
-        .right, .top_right, .bottom_right, .center => {
-            if (@abs(res.right - wa.right) <= threshold) res.right = wa.right;
-        },
-        else => {},
-    }
-
-    switch (sector) {
-        .top, .top_left, .top_right, .center => {
-            if (@abs(res.top - wa.top) <= threshold) res.top = wa.top;
-        },
-        else => {},
-    }
-
-    switch (sector) {
-        .bottom, .bottom_left, .bottom_right, .center => {
-            if (@abs(res.bottom - wa.bottom) <= threshold) res.bottom = wa.bottom;
-        },
-        else => {},
-    }
-
-    return res;
-}
-
 // Check if two ranges [a1, a2] and [b1, b2] overlap or are near each other
 inline fn isNearOrOverlap(a1: i32, a2: i32, b1: i32, b2: i32, tolerance: i32) bool {
     return (a1 <= b2 + tolerance) and (a2 >= b1 - tolerance);
@@ -261,10 +201,10 @@ pub fn snapMoveBoundsEx(
     const h = bounds.height();
 
     var best_dx: ?i32 = null;
-    var min_dist_x: u32 = @as(u32, @intCast(threshold)) + 1;
+    var min_dist_x: u32 = @as(u32, @intCast(@max(threshold, 0))) + 1;
 
     var best_dy: ?i32 = null;
-    var min_dist_y: u32 = @as(u32, @intCast(threshold)) + 1;
+    var min_dist_y: u32 = @as(u32, @intCast(@max(threshold, 0))) + 1;
 
     // 1. Work area edge snapping
     if (wa) |area| {
@@ -508,34 +448,6 @@ test "calculateResizedRect center all-directions expand" {
     try std.testing.expectEqual(@as(i32, 320), res.right);
     try std.testing.expectEqual(@as(i32, 70), res.top);
     try std.testing.expectEqual(@as(i32, 330), res.bottom);
-}
-
-test "snapMoveBounds snaps edges within threshold preserving size" {
-    const wa: Rect = .{ .left = 0, .top = 0, .right = 1920, .bottom = 1040 };
-    const near_left: Rect = .{ .left = 12, .top = 500, .right = 212, .bottom = 600 };
-    const snapped = snapMoveBounds(near_left, wa, 20);
-    try std.testing.expectEqual(@as(i32, 0), snapped.left);
-    try std.testing.expectEqual(@as(i32, 200), snapped.width());
-
-    const far: Rect = .{ .left = 900, .top = 400, .right = 1100, .bottom = 500 };
-    const untouched = snapMoveBounds(far, wa, 20);
-    try std.testing.expectEqual(far, untouched);
-}
-
-test "snapResizeBounds snaps only the dragged edges" {
-    const wa: Rect = .{ .left = 0, .top = 0, .right = 1920, .bottom = 1040 };
-    const rc: Rect = .{ .left = 10, .top = 8, .right = 1902, .bottom = 1035 };
-    const res = snapResizeBounds(rc, wa, .center, 20);
-    try std.testing.expectEqual(@as(i32, 0), res.left);
-    try std.testing.expectEqual(@as(i32, 0), res.top);
-    try std.testing.expectEqual(@as(i32, 1920), res.right);
-    try std.testing.expectEqual(@as(i32, 1040), res.bottom);
-
-    const br_only: Rect = .{ .left = 100, .top = 100, .right = 1910, .bottom = 1050 };
-    const br_res = snapResizeBounds(br_only, wa, .bottom_right, 20);
-    try std.testing.expectEqual(@as(i32, 100), br_res.left);
-    try std.testing.expectEqual(@as(i32, 1920), br_res.right);
-    try std.testing.expectEqual(@as(i32, 1040), br_res.bottom);
 }
 
 test "Window to window magnetic snapping" {

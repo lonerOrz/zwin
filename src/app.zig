@@ -67,20 +67,36 @@ pub const App = struct {
 
     pub fn recordMinimized(self: *App, hwnd: t.HWND) void {
         if (@intFromPtr(hwnd) == 0) return;
+        // Evict existing entry if already present
         var i: usize = 0;
         while (i < self.minimized_count) {
             if (self.minimized_stack[i] == hwnd) {
-                if (i + 1 < self.minimized_count) {
-                    std.mem.copyForwards(t.HWND, self.minimized_stack[i .. self.minimized_count - 1], self.minimized_stack[i + 1 .. self.minimized_count]);
-                }
+                std.mem.copyForwards(t.HWND, self.minimized_stack[i..], self.minimized_stack[i + 1 ..]);
                 self.minimized_count -= 1;
                 break;
             }
             i += 1;
         }
-        if (self.minimized_count < self.minimized_stack.len) {
-            self.minimized_stack[self.minimized_count] = hwnd;
-            self.minimized_count += 1;
+        // If stack full, evict oldest (bottom) element
+        if (self.minimized_count >= self.minimized_stack.len) {
+            std.mem.copyForwards(t.HWND, self.minimized_stack[0..], self.minimized_stack[1..]);
+            self.minimized_count -= 1;
+        }
+        self.minimized_stack[self.minimized_count] = hwnd;
+        self.minimized_count += 1;
+    }
+
+    pub fn removeMinimized(self: *App, hwnd: t.HWND) void {
+        var i: usize = 0;
+        while (i < self.minimized_count) {
+            if (self.minimized_stack[i] == hwnd) {
+                if (i + 1 < self.minimized_count) {
+                    std.mem.copyForwards(t.HWND, self.minimized_stack[i..], self.minimized_stack[i + 1 ..]);
+                }
+                self.minimized_count -= 1;
+                return;
+            }
+            i += 1;
         }
     }
 
@@ -95,11 +111,10 @@ pub const App = struct {
         return null;
     }
 
-    pub fn init(allocator: std.mem.Allocator) !*App {
+    pub fn init(allocator: std.mem.Allocator, config: Config) !*App {
         const self = try allocator.create(App);
         errdefer allocator.destroy(self);
 
-        const config = ConfigStore.load(allocator);
         self.* = .{
             .allocator = allocator,
             .config = config,
@@ -489,8 +504,15 @@ fn winEventCallback(_: t.HWINEVENTHOOK, event: u32, hwnd: t.HWND, idObject: i32,
             app.scheduleBorderReinforce();
         },
         t.EVENT_OBJECT_SHOW, t.EVENT_SYSTEM_MINIMIZEEND => app.refreshActiveBorder(),
-        t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE, t.EVENT_SYSTEM_MINIMIZESTART => {
-            app.recordMinimized(hwnd);
+        t.EVENT_SYSTEM_MINIMIZESTART => {
+            if (Window.getTrueTopLevel(hwnd)) |_| {
+                app.recordMinimized(hwnd);
+            }
+            app.border_mgr.onWindowClosedOrHidden(hwnd);
+            app.refreshActiveBorder();
+        },
+        t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE => {
+            app.removeMinimized(hwnd);
             app.border_mgr.onWindowClosedOrHidden(hwnd);
             app.refreshActiveBorder();
         },

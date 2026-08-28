@@ -186,17 +186,15 @@ pub const Config = struct {
     /// Returns true if the JSON source is missing any field newer than the prior release,
     /// indicating the disk file needs a write-back to keep the template complete.
     pub fn hasMissingFields(json_bytes: []const u8) bool {
-        const new_keys = [_][]const u8{
-            "key_maximize",       "key_restore_min",
-            "key_focus_left",     "key_focus_down",
-            "key_focus_up",       "key_focus_right",
-            "enable_window_snap", "snap_threshold",
+        const needle = [_][]const u8{
+            "\"key_maximize\"",       "\"key_restore_min\"",
+            "\"key_focus_left\"",     "\"key_focus_down\"",
+            "\"key_focus_up\"",       "\"key_focus_right\"",
+            "\"enable_window_snap\"", "\"snap_threshold\"",
         };
         var has_all_new = true;
-        for (new_keys) |k| {
-            var needle_buf: [64]u8 = undefined;
-            const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{k}) catch unreachable;
-            if (std.mem.indexOf(u8, json_bytes, needle) == null) {
+        for (needle) |n| {
+            if (std.mem.indexOf(u8, json_bytes, n) == null) {
                 has_all_new = false;
                 break;
             }

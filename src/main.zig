@@ -25,9 +25,11 @@ pub fn main() !void {
         return;
     }
 
+    // Load config before elevation check so the same instance is reused
+    const cfg = ConfigStore.load(allocator);
+
     // Early elevation handoff before initializing subsystems; fall back on cancel
     if (t.IsUserAnAdmin() == 0) {
-        const cfg = ConfigStore.load(allocator);
         if (cfg.enable_elevated) {
             var path_buf: [1024]u16 = undefined;
             const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
@@ -49,7 +51,7 @@ pub fn main() !void {
     }
 
     const hinst = t.GetModuleHandleW(null);
-    var app = try App.init(allocator);
+    var app = try App.init(allocator, cfg);
     defer app.deinit();
 
     // Transfer mutex ownership to App for restart and deinit lifecycle management
