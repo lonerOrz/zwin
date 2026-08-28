@@ -32,6 +32,10 @@ pub const Config = struct {
 
     log_max_days: u32 = 7,
 
+    // Blacklist filter patterns (e.g. "photoshop.exe", "*blender*", "UnityWndClass")
+    ignore_processes: []const []const u8 = &.{},
+    ignore_classes: []const []const u8 = &.{},
+
     pub const default_json =
         \\{
         \\  "language": "auto",
@@ -58,13 +62,25 @@ pub const Config = struct {
         \\}
     ;
 
-    // Serialize configuration to formatted JSON string
+    /// Releases dynamic memory allocated for blacklist strings.
+    pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
+        for (self.ignore_processes) |item| allocator.free(item);
+        if (self.ignore_processes.len > 0) allocator.free(self.ignore_processes);
+        for (self.ignore_classes) |item| allocator.free(item);
+        if (self.ignore_classes.len > 0) allocator.free(self.ignore_classes);
+        self.ignore_processes = &.{};
+        self.ignore_classes = &.{};
+    }
+
+    /// Serializes configuration to a formatted JSON string.
     pub fn serializeToJson(self: *const Config, allocator: std.mem.Allocator) ![]u8 {
         var hex_buf: [7]u8 = undefined;
         const hex = self.active_border_color.toHex(&hex_buf);
 
-        return std.fmt.allocPrint(
-            allocator,
+        var list = std.array_list.Managed(u8).init(allocator);
+        defer list.deinit();
+
+        try list.print(
             \\{{
             \\  "language": "{s}",
             \\  "key_center": "{c}",
@@ -86,9 +102,8 @@ pub const Config = struct {
             \\  "active_border_hex": "{s}",
             \\  "min_window_width": {d},
             \\  "min_window_height": {d},
-            \\  "log_max_days": {d}
-            \\}}
-            \\
+            \\  "log_max_days": {d},
+            \\  "ignore_processes": [
         ,
             .{
                 self.language.toString(),
@@ -114,6 +129,17 @@ pub const Config = struct {
                 self.log_max_days,
             },
         );
+
+        for (self.ignore_processes, 0..) |p, i| {
+            try list.print("\"{s}\"{s}", .{ p, if (i + 1 < self.ignore_processes.len) ", " else "" });
+        }
+        try list.appendSlice("],\n  \"ignore_classes\": [");
+        for (self.ignore_classes, 0..) |c, i| {
+            try list.print("\"{s}\"{s}", .{ c, if (i + 1 < self.ignore_classes.len) ", " else "" });
+        }
+        try list.appendSlice("]\n}\n");
+
+        return list.toOwnedSlice();
     }
 
     // Parse configuration from JSON with fallback to defaults and value clamping
@@ -142,6 +168,8 @@ pub const Config = struct {
             min_window_width: ?i32 = null,
             min_window_height: ?i32 = null,
             log_max_days: ?u32 = null,
+            ignore_processes: ?[][]const u8 = null,
+            ignore_classes: ?[][]const u8 = null,
         };
 
         const parsed = std.json.parseFromSlice(Parsed, allocator, json_bytes, .{ .ignore_unknown_fields = true }) catch return result;
@@ -159,6 +187,26 @@ pub const Config = struct {
         if (v.min_window_width) |mw| result.min_window_width = @max(mw, 50);
         if (v.min_window_height) |mh| result.min_window_height = @max(mh, 50);
         if (v.log_max_days) |ld| result.log_max_days = @max(ld, 1);
+
+        if (v.ignore_processes) |procs| {
+            var list = std.array_list.Managed([]const u8).init(allocator);
+            for (procs) |item| {
+                if (allocator.dupe(u8, item)) |dup| {
+                    list.append(dup) catch allocator.free(dup);
+                } else |_| {}
+            }
+            result.ignore_processes = list.toOwnedSlice() catch &.{};
+        }
+
+        if (v.ignore_classes) |classes| {
+            var list = std.array_list.Managed([]const u8).init(allocator);
+            for (classes) |item| {
+                if (allocator.dupe(u8, item)) |dup| {
+                    list.append(dup) catch allocator.free(dup);
+                } else |_| {}
+            }
+            result.ignore_classes = list.toOwnedSlice() catch &.{};
+        }
 
         parseKey(&result.key_center, v.key_center);
         parseKey(&result.key_topmost, v.key_topmost);
@@ -191,6 +239,7 @@ pub const Config = struct {
             "\"key_focus_left\"",     "\"key_focus_down\"",
             "\"key_focus_up\"",       "\"key_focus_right\"",
             "\"enable_window_snap\"", "\"snap_threshold\"",
+            "\"ignore_processes\"",   "\"ignore_classes\"",
         };
         var has_all_new = true;
         for (needle) |n| {
@@ -252,12 +301,39 @@ test "loadFromJson parses new keybindings and snap settings" {
     try std.testing.expectEqual(@as(i32, 25), c.snap_threshold);
 }
 
+test "Config blacklist roundtrip" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "ignore_processes": ["photoshop.exe", "*blender*"],
+        \\  "ignore_classes": ["UnityWndClass"]
+        \\}
+    ;
+    var cfg = Config.loadFromJson(allocator, json);
+    defer cfg.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), cfg.ignore_processes.len);
+    try std.testing.expectEqualStrings("photoshop.exe", cfg.ignore_processes[0]);
+    try std.testing.expectEqualStrings("*blender*", cfg.ignore_processes[1]);
+    try std.testing.expectEqual(@as(usize, 1), cfg.ignore_classes.len);
+    try std.testing.expectEqualStrings("UnityWndClass", cfg.ignore_classes[0]);
+
+    const serialized = try cfg.serializeToJson(allocator);
+    defer allocator.free(serialized);
+
+    var roundtrip_cfg = Config.loadFromJson(allocator, serialized);
+    defer roundtrip_cfg.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), roundtrip_cfg.ignore_processes.len);
+    try std.testing.expectEqualStrings("photoshop.exe", roundtrip_cfg.ignore_processes[0]);
+}
+
 test "hasMissingFields detects old config without new keys" {
     // Old config missing new keys
     const old = "{\"language\":\"en\",\"key_center\":\"C\"}";
     try std.testing.expect(Config.hasMissingFields(old));
 
     // New config with all keys present
-    const new_json = "{\"language\":\"en\",\"key_maximize\":\"M\",\"key_restore_min\":\"N\",\"key_focus_left\":\"H\",\"key_focus_down\":\"J\",\"key_focus_up\":\"K\",\"key_focus_right\":\"L\",\"enable_window_snap\":true,\"snap_threshold\":18}";
+    const new_json = "{\"language\":\"en\",\"key_maximize\":\"M\",\"key_restore_min\":\"N\",\"key_focus_left\":\"H\",\"key_focus_down\":\"J\",\"key_focus_up\":\"K\",\"key_focus_right\":\"L\",\"enable_window_snap\":true,\"snap_threshold\":18,\"ignore_processes\":[],\"ignore_classes\":[]}";
     try std.testing.expect(!Config.hasMissingFields(new_json));
 }

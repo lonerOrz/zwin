@@ -259,7 +259,7 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     if (self.isAltDown() and !self.paused.load(.acquire)) {
         switch (wParam) {
             t.WM_LBUTTONDOWN => {
-                if (actionableWindowAt(mouse.pt)) |win| {
+                if (actionableWindowAt(mouse.pt, self.config)) |win| {
                     self.pending_action = .{
                         .kind = .drag,
                         .pt = pt,
@@ -270,7 +270,7 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
                 }
             },
             t.WM_RBUTTONDOWN => {
-                if (actionableWindowAt(mouse.pt)) |win| {
+                if (actionableWindowAt(mouse.pt, self.config)) |win| {
                     self.pending_action = .{
                         .kind = .resize,
                         .pt = pt,
@@ -281,13 +281,15 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
                 }
             },
             t.WM_MBUTTONDOWN => {
-                self.alt_state = .alt_held_consumed;
-                self.middle_pending = true;
-                self.enqueueIntent(.{ .minimize_at = .{ .pt = pt } });
-                return 1;
+                if (actionableWindowAt(mouse.pt, self.config) != null) {
+                    self.alt_state = .alt_held_consumed;
+                    self.middle_pending = true;
+                    self.enqueueIntent(.{ .minimize_at = .{ .pt = pt } });
+                    return 1;
+                }
             },
             t.WM_MOUSEWHEEL => {
-                if (self.config.enable_wheel_opacity) {
+                if (self.config.enable_wheel_opacity and actionableWindowAt(mouse.pt, self.config) != null) {
                     const delta_raw: i16 = @bitCast(@as(u16, @intCast((mouse.mouseData >> 16) & 0xFFFF)));
                     const step: i32 = @intCast(self.config.opacity_step);
                     const change: i32 = if (delta_raw > 0) step else -step;
@@ -355,10 +357,10 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     return t.CallNextHookEx(null, nCode, wParam, lParam);
 }
 
-fn actionableWindowAt(pt: t.POINT) ?Window {
+fn actionableWindowAt(pt: t.POINT, config: *const Config) ?Window {
     const raw_hwnd = t.WindowFromPoint(pt) orelse return null;
     const top = Window.getTrueTopLevel(raw_hwnd) orelse return null;
     const win = Window.init(top);
-    if (win.isExclusiveFullScreen()) return null;
+    if (win.isExclusiveFullScreen() or win.isIgnored(config)) return null;
     return win;
 }

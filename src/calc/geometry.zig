@@ -513,3 +513,46 @@ test "snapMoveBoundsEx with no snap targets is identity at distance" {
     const result = snapMoveBoundsEx(far, wa, &others, 15, true);
     try std.testing.expectEqual(far, result);
 }
+
+/// Matches text against a wildcard pattern supporting '*' (any chars) and '?' (single char).
+/// Case-insensitive, iterative, zero-allocation.
+pub fn matchGlob(pattern: []const u8, text: []const u8) bool {
+    var p_idx: usize = 0;
+    var t_idx: usize = 0;
+    var star_idx: ?usize = null;
+    var match_idx: usize = 0;
+
+    while (t_idx < text.len) {
+        if (p_idx < pattern.len and (pattern[p_idx] == '?' or std.ascii.toLower(pattern[p_idx]) == std.ascii.toLower(text[t_idx]))) {
+            p_idx += 1;
+            t_idx += 1;
+        } else if (p_idx < pattern.len and pattern[p_idx] == '*') {
+            star_idx = p_idx;
+            match_idx = t_idx;
+            p_idx += 1;
+        } else if (star_idx) |s_idx| {
+            p_idx = s_idx + 1;
+            match_idx += 1;
+            t_idx = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while (p_idx < pattern.len and pattern[p_idx] == '*') {
+        p_idx += 1;
+    }
+
+    return p_idx == pattern.len;
+}
+
+test "matchGlob pattern matching" {
+    try std.testing.expect(matchGlob("*.exe", "photoshop.exe"));
+    try std.testing.expect(matchGlob("*.EXE", "Photoshop.exe"));
+    try std.testing.expect(matchGlob("*blender*", "C:\\Program Files\\Blender Foundation\\blender.exe"));
+    try std.testing.expect(matchGlob("Unity?ndClass", "UnityWndClass"));
+    try std.testing.expect(!matchGlob("*.dll", "photoshop.exe"));
+    try std.testing.expect(matchGlob("*", "anything"));
+    try std.testing.expect(matchGlob("", ""));
+    try std.testing.expect(!matchGlob("", "a"));
+}

@@ -98,7 +98,7 @@ pub const GestureStateMachine = struct {
         const win = Window.init(target.hwnd);
         var snap_targets = geom.SnapTargetList{};
         if (self.config.enable_window_snap) {
-            Window.collectSnapTargets(target.hwnd, &snap_targets);
+            Window.collectSnapTargets(target.hwnd, self.config, &snap_targets);
         }
         self.state = .{ .dragging = .{
             .target = target,
@@ -124,7 +124,7 @@ pub const GestureStateMachine = struct {
         const win = Window.init(target.hwnd);
         var snap_targets = geom.SnapTargetList{};
         if (self.config.enable_window_snap) {
-            Window.collectSnapTargets(target.hwnd, &snap_targets);
+            Window.collectSnapTargets(target.hwnd, self.config, &snap_targets);
         }
         self.state = .{ .resizing = .{
             .target = target,

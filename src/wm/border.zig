@@ -25,6 +25,11 @@ pub const BorderManager = struct {
             return;
         };
 
+        if (Window.init(true_hwnd).isIgnored(self.config)) {
+            self.reset();
+            return;
+        }
+
         if (self.last_active != true_hwnd) {
             self.reset();
         }
@@ -34,6 +39,10 @@ pub const BorderManager = struct {
     pub fn refreshCurrent(self: *BorderManager, raw_hwnd: t.HWND) void {
         if (!self.config.enable_border) return;
         const true_hwnd = Window.getTrueTopLevel(raw_hwnd) orelse return;
+        if (Window.init(true_hwnd).isIgnored(self.config)) {
+            self.reset();
+            return;
+        }
         self.applyBorder(true_hwnd);
     }
 

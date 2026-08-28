@@ -385,6 +385,7 @@ pub const HIGH_PRIORITY_CLASS: u32 = 0x00000080;
 pub const THREAD_PRIORITY_HIGHEST: i32 = 2;
 pub const SMTO_ABORTIFHUNG: u32 = 0x0002;
 pub const MSGFLT_ALLOW: u32 = 1;
+pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
 // File system and I/O flags
 pub const GENERIC_READ: u32 = 0x80000000;
@@ -492,6 +493,9 @@ pub extern "user32" fn SetWindowLongPtrW(hwnd: HWND, nIndex: i32, dwNewLong: isi
 pub extern "user32" fn SetLayeredWindowAttributes(hwnd: HWND, crKey: u32, bAlpha: u8, dwFlags: u32) callconv(.winapi) BOOL;
 pub extern "user32" fn GetLayeredWindowAttributes(hwnd: HWND, pcrKey: ?*u32, pbAlpha: ?*u8, pdwFlags: ?*u32) callconv(.winapi) BOOL;
 
+pub extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: BOOL, dwProcessId: u32) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn QueryFullProcessImageNameW(hProcess: HANDLE, dwFlags: u32, lpExeName: [*]u16, lpdwSize: *u32) callconv(.winapi) BOOL;
+pub extern "user32" fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: ?*u32) callconv(.winapi) u32;
 pub extern "user32" fn GetCursorPos(lpPoint: *POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetAsyncKeyState(vKey: i32) callconv(.winapi) i16;
 pub extern "user32" fn SendInput(cInputs: u32, pInputs: [*]const INPUT, cbSize: i32) callconv(.winapi) u32;

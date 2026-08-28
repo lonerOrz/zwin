@@ -197,6 +197,7 @@ pub const App = struct {
         }
 
         self.mutex.release();
+        self.config.deinit(self.allocator);
 
         Logger.global = null;
         self.logger_inst.deinit();
@@ -356,6 +357,7 @@ pub const App = struct {
 
         const prev_autostart = self.config.enable_autostart;
         const prev_elevated = self.config.enable_elevated;
+        self.config.deinit(self.allocator);
         self.config = ConfigStore.load(self.allocator);
 
         if (self.config.enable_autostart != prev_autostart or self.config.enable_elevated != prev_elevated) {
@@ -428,7 +430,7 @@ pub const App = struct {
             },
             .focus_direction => |dir| {
                 const current = t.GetForegroundWindow() orelse return;
-                if (Window.findDirectionalTarget(current, dir)) |target| {
+                if (Window.findDirectionalTarget(current, dir, &self.config)) |target| {
                     Window.focusWindow(target);
                 }
             },
@@ -466,7 +468,7 @@ pub const App = struct {
         const raw_fg = t.GetForegroundWindow() orelse return null;
         const top = Window.getTrueTopLevel(raw_fg) orelse return null;
         const win = Window.init(top);
-        if (win.isExclusiveFullScreen()) return null;
+        if (win.isExclusiveFullScreen() or win.isIgnored(&self.config)) return null;
         return .{ .hwnd = top, .session_id = self.worker.fetchSessionId() };
     }
 
@@ -474,7 +476,7 @@ pub const App = struct {
         const raw_hwnd = t.WindowFromPoint(.{ .x = pt.x, .y = pt.y }) orelse return null;
         const top = Window.getTrueTopLevel(raw_hwnd) orelse return null;
         const win = Window.init(top);
-        if (win.isExclusiveFullScreen()) return null;
+        if (win.isExclusiveFullScreen() or win.isIgnored(&self.config)) return null;
         return .{ .hwnd = top, .session_id = self.worker.fetchSessionId() };
     }
 
