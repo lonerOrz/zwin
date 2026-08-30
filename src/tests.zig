@@ -6,4 +6,5 @@ test {
     _ = @import("infra/config_store.zig");
     _ = @import("infra/i18n.zig");
     _ = @import("platform/paths.zig");
+    _ = @import("wm/intent_handler.zig");
 }

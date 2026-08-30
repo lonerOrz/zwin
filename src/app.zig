@@ -16,6 +16,7 @@ const BorderManager = @import("wm/border.zig").BorderManager;
 const OsdManager = @import("wm/osd.zig").OsdManager;
 const GestureStateMachine = @import("input/gesture.zig").GestureStateMachine;
 const InputEngine = @import("input/engine.zig").InputEngine;
+const IntentHandler = @import("wm/intent_handler.zig").IntentHandler;
 const Autostart = @import("platform/autostart.zig").Autostart;
 const I18n = @import("infra/i18n.zig").I18n;
 const resources = @import("platform/resources.zig");
@@ -48,6 +49,7 @@ pub const App = struct {
     gesture: GestureStateMachine,
     hook_engine: InputEngine,
     watcher: ConfigWatcher = .{},
+    intent_handler: IntentHandler = undefined,
 
     // RAII platform resources
     msg_win: ?resources.MessageWindow = null,
@@ -55,62 +57,12 @@ pub const App = struct {
     win_hooks: ?resources.WinEventHooks = null,
     mutex: resources.SingleInstanceMutex = .{},
 
-    // Minimized-window LRU stack for Alt+N restore
-    minimized_stack: [16]t.HWND = undefined,
-    minimized_count: usize = 0,
-
     last_config_write_ms: u64 = 0,
     quitting: bool = false,
     taskbar_created_msg: u32 = 0,
     watchdog_pt: t.POINT = .{ .x = 0, .y = 0 },
 
     pub var global: ?*App = null;
-
-    pub fn recordMinimized(self: *App, hwnd: t.HWND) void {
-        if (@intFromPtr(hwnd) == 0) return;
-        // Evict existing entry if already present
-        var i: usize = 0;
-        while (i < self.minimized_count) {
-            if (self.minimized_stack[i] == hwnd) {
-                std.mem.copyForwards(t.HWND, self.minimized_stack[i..], self.minimized_stack[i + 1 ..]);
-                self.minimized_count -= 1;
-                break;
-            }
-            i += 1;
-        }
-        // If stack full, evict oldest (bottom) element
-        if (self.minimized_count >= self.minimized_stack.len) {
-            std.mem.copyForwards(t.HWND, self.minimized_stack[0..], self.minimized_stack[1..]);
-            self.minimized_count -= 1;
-        }
-        self.minimized_stack[self.minimized_count] = hwnd;
-        self.minimized_count += 1;
-    }
-
-    pub fn removeMinimized(self: *App, hwnd: t.HWND) void {
-        var i: usize = 0;
-        while (i < self.minimized_count) {
-            if (self.minimized_stack[i] == hwnd) {
-                if (i + 1 < self.minimized_count) {
-                    std.mem.copyForwards(t.HWND, self.minimized_stack[i..], self.minimized_stack[i + 1 ..]);
-                }
-                self.minimized_count -= 1;
-                return;
-            }
-            i += 1;
-        }
-    }
-
-    pub fn popLastMinimized(self: *App) ?t.HWND {
-        while (self.minimized_count > 0) {
-            self.minimized_count -= 1;
-            const candidate = self.minimized_stack[self.minimized_count];
-            if (t.IsWindow(candidate) != 0 and Window.init(candidate).isMinimized()) {
-                return candidate;
-            }
-        }
-        return null;
-    }
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !*App {
         const self = try allocator.create(App);
@@ -129,8 +81,15 @@ pub const App = struct {
         logger.info("App", "zwin starting...", .{});
 
         self.border_mgr = BorderManager.init(&self.config);
-        self.gesture = GestureStateMachine.init(&self.worker, &self.config);
+        self.gesture = GestureStateMachine.init(&self.worker, &self.config, &self.osd);
         self.hook_engine = InputEngine.init(&self.gesture, &self.config);
+        self.intent_handler = IntentHandler.init(
+            &self.worker,
+            &self.border_mgr,
+            &self.osd,
+            &self.gesture,
+            &self.config,
+        );
 
         App.global = self;
         return self;
@@ -391,135 +350,15 @@ pub const App = struct {
     }
 
     pub fn handleIntent(self: *App, intent: UserIntent) void {
+        self.intent_handler.dispatch(intent);
         switch (intent) {
-            .move_window_direction => |dir| {
-                const target = self.resolveActiveTarget() orelse return;
-                const win = Window.init(target.hwnd);
-                win.ensureRestored();
-
-                const bounds = win.getPhysicalBounds();
-                const pad = win.getShadowPadding();
-                const step = win.scaleDpi(self.config.move_step);
-                const vec = dir.toVector(step);
-                var moved = geom.offsetRect(bounds, vec);
-
-                // Clamp to work area so the window can never slide off-screen or behind the taskbar
-                if (win.getMonitorWorkArea()) |wa| {
-                    moved = geom.clampRectToWorkArea(moved, wa);
-                }
-
-                self.worker.postDiscrete(target, .{ .set_bounds = .{
-                    .x = moved.left - pad.l,
-                    .y = moved.top - pad.t,
-                    .w = moved.width() + pad.l + pad.r,
-                    .h = moved.height() + pad.t + pad.b,
-                } });
-            },
-
-            .center_active_window => {
-                const target = self.resolveActiveTarget() orelse return;
-                const win = Window.init(target.hwnd);
-                win.ensureRestored();
-                if (win.getMonitorWorkArea()) |wa| {
-                    const bounds = win.getPhysicalBounds();
-                    const pad = win.getShadowPadding();
-                    const centered = geom.calculateCenterRect(wa, bounds, pad);
-                    self.worker.postDiscrete(target, .{ .set_bounds = .{
-                        .x = centered.left,
-                        .y = centered.top,
-                        .w = centered.width(),
-                        .h = centered.height(),
-                    } });
-                }
-            },
-            .toggle_active_topmost => {
-                const target = self.resolveActiveTarget() orelse return;
-                const ex_style = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
-                const will_topmost = (ex_style & t.WS_EX_TOPMOST) == 0;
-                _ = t.SetWindowPos(
-                    target.hwnd,
-                    if (will_topmost) t.HWND_TOPMOST else t.HWND_NOTOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOACTIVATE,
-                );
-                self.osd.showTopmost(will_topmost, self.config.language);
-            },
-            .toggle_active_maximize => {
-                const target = self.resolveActiveTarget() orelse return;
-                Window.init(target.hwnd).toggleMaximize();
-            },
-            .toggle_active_passthrough => {
-                const target = self.resolveActiveTarget() orelse return;
-                const is_pt = Window.init(target.hwnd).togglePassthrough();
-                self.osd.showPassthrough(is_pt, self.config.language);
-            },
-            .restore_last_minimized => {
-                if (self.popLastMinimized()) |hwnd| {
-                    Window.focusWindow(hwnd);
-                }
-            },
-            .focus_direction => |dir| {
-                const current = t.GetForegroundWindow() orelse return;
-                if (Window.findDirectionalTarget(current, dir, &self.config)) |target| {
-                    Window.focusWindow(target);
-                }
-            },
-            .close_active_window => {
-                const target = self.resolveActiveTarget() orelse return;
-                Window.init(target.hwnd).close();
-            },
-            .abort_gesture => self.gesture.abort(),
-            .minimize_at => |m| {
-                const target = self.resolveTargetAtPoint(m.pt) orelse return;
-                Window.init(target.hwnd).minimize();
-            },
-            .adjust_opacity_at => |op| {
-                const target = self.resolveTargetAtPoint(op.pt) orelse self.resolveActiveTarget() orelse return;
-                const win = Window.init(target.hwnd);
-                win.adjustOpacity(op.delta);
-
-                var alpha: u8 = 255;
-                var flags: u32 = 0;
-                const ex = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
-                if ((ex & t.WS_EX_LAYERED) != 0) {
-                    if (t.GetLayeredWindowAttributes(target.hwnd, null, &alpha, &flags) == 0 or (flags & t.LWA_ALPHA) == 0) {
-                        alpha = 255;
-                    }
-                }
-                self.osd.showOpacity(op.pt, alpha, self.config.language);
-            },
-            .foreground_changed => |hwnd| {
-                self.border_mgr.onFocusChange(hwnd);
-                self.scheduleBorderReinforce();
-            },
-            .window_closed_or_hidden => |hwnd| {
-                self.removeMinimized(hwnd);
-                self.border_mgr.onWindowClosedOrHidden(hwnd);
-                self.refreshActiveBorder();
-            },
+            .foreground_changed => self.scheduleBorderReinforce(),
+            .window_closed_or_hidden => self.refreshActiveBorder(),
+            else => {},
         }
     }
 
-    fn resolveActiveTarget(self: *App) ?WindowTarget {
-        const raw_fg = t.GetForegroundWindow() orelse return null;
-        const top = Window.getTrueTopLevel(raw_fg) orelse return null;
-        const win = Window.init(top);
-        if (win.isExclusiveFullScreen() or win.isIgnored(&self.config)) return null;
-        return .{ .hwnd = top, .session_id = self.worker.fetchSessionId() };
-    }
-
-    fn resolveTargetAtPoint(self: *App, pt: geom.Point) ?WindowTarget {
-        const raw_hwnd = t.WindowFromPoint(.{ .x = pt.x, .y = pt.y }) orelse return null;
-        const top = Window.getTrueTopLevel(raw_hwnd) orelse return null;
-        const win = Window.init(top);
-        if (win.isExclusiveFullScreen() or win.isIgnored(&self.config)) return null;
-        return .{ .hwnd = top, .session_id = self.worker.fetchSessionId() };
-    }
-
-    fn refreshActiveBorder(self: *App) void {
+    pub fn refreshActiveBorder(self: *App) void {
         if (t.GetForegroundWindow()) |fg| {
             self.border_mgr.onFocusChange(fg);
             self.scheduleBorderReinforce();
@@ -546,12 +385,11 @@ fn winEventCallback(_: t.HWINEVENTHOOK, event: u32, hwnd: t.HWND, idObject: i32,
         t.EVENT_OBJECT_SHOW, t.EVENT_SYSTEM_MINIMIZEEND => app.refreshActiveBorder(),
         t.EVENT_SYSTEM_MINIMIZESTART => {
             if (Window.getTrueTopLevel(hwnd)) |_| {
-                app.recordMinimized(hwnd);
+                app.intent_handler.recordMinimized(hwnd);
             }
             app.enqueueIntentFromWinEvent(.{ .window_closed_or_hidden = hwnd });
         },
         t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE => {
-            app.removeMinimized(hwnd);
             app.enqueueIntentFromWinEvent(.{ .window_closed_or_hidden = hwnd });
         },
         else => {},

@@ -5,6 +5,7 @@ const WindowTarget = types.WindowTarget;
 const WindowWorker = @import("../infra/worker.zig").WindowWorker;
 const Config = @import("../domain/config.zig").Config;
 const Window = @import("../platform/window.zig").Window;
+const OsdManager = @import("../wm/osd.zig").OsdManager;
 
 pub const GestureState = union(enum) {
     idle,
@@ -37,11 +38,12 @@ pub const GestureStateMachine = struct {
     state: GestureState = .idle,
     worker: *WindowWorker,
     config: *const Config,
+    osd: *OsdManager,
     last_osd_w: i32 = 0,
     last_osd_h: i32 = 0,
 
-    pub fn init(worker: *WindowWorker, config: *const Config) GestureStateMachine {
-        return .{ .worker = worker, .config = config };
+    pub fn init(worker: *WindowWorker, config: *const Config, osd: *OsdManager) GestureStateMachine {
+        return .{ .worker = worker, .config = config, .osd = osd };
     }
 
     pub fn startDrag(self: *GestureStateMachine, target: WindowTarget, cursor: geom.Point, bounds: geom.Rect, pad: geom.Padding) void {
@@ -81,7 +83,6 @@ pub const GestureStateMachine = struct {
     }
 
     pub fn updateMouseMove(self: *GestureStateMachine, current_pt: geom.Point) void {
-        const app_ptr = @import("../app.zig").App.global;
         switch (self.state) {
             .idle => {},
             .dragging => |d| {
@@ -132,11 +133,9 @@ pub const GestureStateMachine = struct {
                 const height = rc.height();
 
                 if ((@abs(width - self.last_osd_w) >= 2) or (@abs(height - self.last_osd_h) >= 2)) {
-                    if (app_ptr) |app| {
-                        self.last_osd_w = width;
-                        self.last_osd_h = height;
-                        app.osd.showResize(current_pt, width, height);
-                    }
+                    self.last_osd_w = width;
+                    self.last_osd_h = height;
+                    self.osd.showResize(current_pt, width, height);
                 }
 
                 self.worker.postStreaming(r.target, .{ .resize = .{
@@ -151,8 +150,7 @@ pub const GestureStateMachine = struct {
     }
 
     pub fn finish(self: *GestureStateMachine) void {
-        const app_ptr = @import("../app.zig").App.global;
-        if (app_ptr) |app| app.osd.hide();
+        self.osd.hide();
 
         switch (self.state) {
             .dragging => |d| endMoveSize(d.target.hwnd),
@@ -164,8 +162,7 @@ pub const GestureStateMachine = struct {
     }
 
     pub fn abort(self: *GestureStateMachine) void {
-        const app_ptr = @import("../app.zig").App.global;
-        if (app_ptr) |app| app.osd.hide();
+        self.osd.hide();
 
         switch (self.state) {
             .idle => return,
