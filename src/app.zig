@@ -82,7 +82,7 @@ pub const App = struct {
 
         self.border_mgr = BorderManager.init(&self.config);
         self.gesture = GestureStateMachine.init(&self.worker, &self.config, &self.osd);
-        self.hook_engine = InputEngine.init(&self.gesture, &self.config);
+        self.hook_engine = InputEngine.init(&self.gesture, &self.config, &self.intent_handler);
         self.intent_handler = IntentHandler.init(
             &self.worker,
             &self.border_mgr,

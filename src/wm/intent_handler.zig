@@ -4,6 +4,9 @@ const geom = @import("../calc/geometry.zig");
 const types = @import("../domain/types.zig");
 const UserIntent = types.UserIntent;
 const WindowTarget = types.WindowTarget;
+const ModifierMask = types.ModifierMask;
+const MouseTrigger = types.MouseTrigger;
+const Action = types.Action;
 const Window = @import("../platform/window.zig").Window;
 const Config = @import("../domain/config.zig").Config;
 const WindowWorker = @import("../infra/worker.zig").WindowWorker;
@@ -216,6 +219,18 @@ pub const IntentHandler = struct {
     fn handleWindowClosedOrHidden(self: *IntentHandler, hwnd: t.HWND) void {
         self.removeMinimized(hwnd);
         self.border_mgr.onWindowClosedOrHidden(hwnd);
+    }
+
+    pub fn matchKeyBinding(self: *IntentHandler, current_mods: ModifierMask, vk: u32) ?Action {
+        return self.config.matchKeyBinding(current_mods, vk);
+    }
+
+    pub fn matchMouseBinding(self: *IntentHandler, current_mods: ModifierMask, trigger: MouseTrigger) ?Action {
+        return self.config.matchMouseBinding(current_mods, trigger);
+    }
+
+    pub fn hasMatchingModifierSubset(self: *IntentHandler, current: ModifierMask) bool {
+        return self.config.hasMatchingModifierSubset(current);
     }
 
     fn resolveActiveTarget(self: *IntentHandler) ?WindowTarget {

@@ -10,6 +10,7 @@ const ModifierMask = types.ModifierMask;
 const Window = @import("../platform/window.zig").Window;
 const logger = @import("../infra/logger.zig");
 const GestureStateMachine = @import("gesture.zig").GestureStateMachine;
+const IntentHandler = @import("../wm/intent_handler.zig").IntentHandler;
 const Config = @import("../domain/config.zig").Config;
 
 const intent_cap: usize = 16;
@@ -20,6 +21,7 @@ pub const InputEngine = struct {
     mouse_hook: ?t.HHOOK = null,
     gesture: *GestureStateMachine,
     config: *const Config,
+    intent_handler: *IntentHandler,
     paused: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     consumed_alt: bool = false,
@@ -44,12 +46,13 @@ pub const InputEngine = struct {
 
     pub var global: ?*InputEngine = null;
 
-    pub fn init(gesture: *GestureStateMachine, config: *const Config) InputEngine {
+    pub fn init(gesture: *GestureStateMachine, config: *const Config, intent_handler: *IntentHandler) InputEngine {
         var drag_th = t.GetSystemMetrics(t.SM_CXDRAG);
         if (drag_th <= 0) drag_th = 4;
         return .{
             .gesture = gesture,
             .config = config,
+            .intent_handler = intent_handler,
             .drag_threshold = drag_th,
         };
     }
@@ -164,12 +167,12 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
     }
 
     const current_mods = InputEngine.sampleModifiers();
-    if (current_mods.isEmpty() or !self.config.hasMatchingModifierSubset(current_mods)) {
+    if (current_mods.isEmpty() or !self.intent_handler.hasMatchingModifierSubset(current_mods)) {
         return t.CallNextHookEx(null, nCode, wParam, lParam);
     }
 
     if (is_down) {
-        if (self.config.matchKeyBinding(current_mods, kbd.vkCode)) |act| {
+        if (self.intent_handler.matchKeyBinding(current_mods, kbd.vkCode)) |act| {
             if (current_mods.alt) self.consumed_alt = true;
             if (current_mods.win) self.consumed_win = true;
 
@@ -195,7 +198,7 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     if (!self.paused.load(.acquire)) {
         const current_mods = InputEngine.sampleModifiers();
 
-        if (!current_mods.isEmpty() and self.config.hasMatchingModifierSubset(current_mods)) {
+        if (!current_mods.isEmpty() and self.intent_handler.hasMatchingModifierSubset(current_mods)) {
             const m_trig: ?MouseTrigger = switch (wParam) {
                 t.WM_LBUTTONDOWN => .left,
                 t.WM_RBUTTONDOWN => .right,
@@ -205,8 +208,8 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
             };
 
             if (m_trig) |trig| {
-                if (self.config.matchMouseBinding(current_mods, trig)) |act| {
-                    if (actionableWindowAt(mouse.pt, self.config)) |win| {
+                if (self.intent_handler.matchMouseBinding(current_mods, trig)) |act| {
+                    if (actionableWindowAt(mouse.pt, self.intent_handler.config)) |win| {
                         if (current_mods.alt) self.consumed_alt = true;
                         if (current_mods.win) self.consumed_win = true;
 
