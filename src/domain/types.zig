@@ -98,6 +98,7 @@ pub const Action = enum {
     drag_resize,
     adjust_opacity,
     minimize,
+    toggle_passthrough,
 
     pub fn toUserIntent(self: Action) ?UserIntent {
         return switch (self) {
@@ -114,6 +115,7 @@ pub const Action = enum {
             .toggle_maximize => .toggle_active_maximize,
             .restore_last_minimized => .restore_last_minimized,
             .close => .close_active_window,
+            .toggle_passthrough => .toggle_active_passthrough,
             .drag_move, .drag_resize, .adjust_opacity, .minimize => null,
         };
     }
@@ -137,6 +139,7 @@ pub const Action = enum {
             .{ "drag_resize", .drag_resize },
             .{ "adjust_opacity", .adjust_opacity },
             .{ "minimize", .minimize },
+            .{ "toggle_passthrough", .toggle_passthrough },
         });
         return map.get(str);
     }
@@ -154,6 +157,7 @@ pub const UserIntent = union(enum) {
     center_active_window,
     toggle_active_topmost,
     toggle_active_maximize,
+    toggle_active_passthrough,
     close_active_window,
     restore_last_minimized,
     focus_direction: geom.Direction,
@@ -204,11 +208,11 @@ test "ModifierMask bit ops" {
 
 test "Action.fromString roundtrip" {
     const actions = [_]Action{
-        .focus_left, .focus_right,    .focus_up,        .focus_down,
-        .move_left,  .move_right,     .move_up,         .move_down,
-        .center,     .toggle_topmost, .toggle_maximize, .restore_last_minimized,
-        .close,      .drag_move,      .drag_resize,     .adjust_opacity,
-        .minimize,
+        .focus_left, .focus_right,        .focus_up,        .focus_down,
+        .move_left,  .move_right,         .move_up,         .move_down,
+        .center,     .toggle_topmost,     .toggle_maximize, .restore_last_minimized,
+        .close,      .drag_move,          .drag_resize,     .adjust_opacity,
+        .minimize,   .toggle_passthrough,
     };
     for (actions) |a| {
         try std.testing.expectEqual(a, Action.fromString(@tagName(a)).?);

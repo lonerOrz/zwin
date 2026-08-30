@@ -451,6 +451,11 @@ pub const App = struct {
                 const target = self.resolveActiveTarget() orelse return;
                 Window.init(target.hwnd).toggleMaximize();
             },
+            .toggle_active_passthrough => {
+                const target = self.resolveActiveTarget() orelse return;
+                const is_pt = Window.init(target.hwnd).togglePassthrough();
+                self.osd.showPassthrough(is_pt, self.config.language);
+            },
             .restore_last_minimized => {
                 if (self.popLastMinimized()) |hwnd| {
                     Window.focusWindow(hwnd);

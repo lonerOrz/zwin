@@ -65,6 +65,7 @@ ignore_classes = ["UnityWndClass", "UnrealWindow"]
 "alt+q"            = "close"
 "alt+m"            = "toggle_maximize"
 "alt+n"            = "restore_last_minimized"
+"alt+p"            = "toggle_passthrough"
 "alt+mouse_left"   = "drag_move"
 "alt+mouse_right"  = "drag_resize"
 "alt+mouse_middle" = "minimize"

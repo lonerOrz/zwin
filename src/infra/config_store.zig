@@ -111,6 +111,7 @@ const DEFAULT_CONFIG_TOML =
     \\"alt+mouse_right" = "drag_resize"
     \\"alt+mouse_middle" = "minimize"
     \\"alt+mouse_wheel" = "adjust_opacity"
+    \\"alt+p" = "toggle_passthrough"
 ;
 
 pub const ConfigStore = struct {

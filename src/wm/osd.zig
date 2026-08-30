@@ -2,6 +2,7 @@ const std = @import("std");
 const t = @import("../platform/win32.zig");
 const geom = @import("../calc/geometry.zig");
 const Language = @import("../infra/i18n.zig").Language;
+const I18n = @import("../infra/i18n.zig").I18n;
 
 const OSD_WIDTH: i32 = 260;
 const OSD_HEIGHT: i32 = 48;
@@ -15,6 +16,7 @@ pub const OsdKind = enum {
     resize,
     opacity,
     topmost,
+    passthrough,
 };
 
 pub const OsdManager = struct {
@@ -108,28 +110,28 @@ pub const OsdManager = struct {
 
     pub fn showOpacity(self: *OsdManager, cursor: geom.Point, alpha: u8, lang: Language) void {
         const percent = @divTrunc(@as(u32, alpha) * 100, 255);
-        var buf_u8: [64]u8 = undefined;
-        const label = if (lang == .zh_CN)
-            std.fmt.bufPrint(&buf_u8, "透明度: {d}%", .{percent}) catch return
-        else
-            std.fmt.bufPrint(&buf_u8, "Opacity: {d}%", .{percent}) catch return;
-
-        self.setText(label);
+        var buf: [64]u8 = undefined;
+        const formatted = I18n.formatOpacity(lang, &buf, percent) orelse return;
+        self.setText(formatted);
         self.kind = .opacity;
         self.repositionAndShow(cursor.x + 20, cursor.y + 20, 1500);
     }
 
     pub fn showTopmost(self: *OsdManager, is_topmost: bool, lang: Language) void {
+        const strings = I18n.getStrings(lang);
+        self.setWideText(if (is_topmost) strings.osd_topmost_on else strings.osd_topmost_off);
+        self.kind = .topmost;
         var cursor: t.POINT = undefined;
         _ = t.GetCursorPos(&cursor);
+        self.repositionAndShow(cursor.x + 20, cursor.y + 20, 1500);
+    }
 
-        const text = if (lang == .zh_CN)
-            (if (is_topmost) "置顶: 开启" else "置顶: 关闭")
-        else
-            (if (is_topmost) "Topmost: ON" else "Topmost: OFF");
-
-        self.setText(text);
-        self.kind = .topmost;
+    pub fn showPassthrough(self: *OsdManager, is_passthrough: bool, lang: Language) void {
+        const strings = I18n.getStrings(lang);
+        self.setWideText(if (is_passthrough) strings.osd_passthrough_on else strings.osd_passthrough_off);
+        self.kind = .passthrough;
+        var cursor: t.POINT = undefined;
+        _ = t.GetCursorPos(&cursor);
         self.repositionAndShow(cursor.x + 20, cursor.y + 20, 1500);
     }
 
@@ -144,6 +146,15 @@ pub const OsdManager = struct {
 
     fn setText(self: *OsdManager, text_u8: []const u8) void {
         const len = std.unicode.utf8ToUtf16Le(&self.text_buf, text_u8) catch return;
+        self.text_buf[len] = 0;
+        self.text_len = len;
+    }
+
+    fn setWideText(self: *OsdManager, text_w: [*:0]const u16) void {
+        var len: usize = 0;
+        while (len < self.text_buf.len - 1 and text_w[len] != 0) : (len += 1) {
+            self.text_buf[len] = text_w[len];
+        }
         self.text_buf[len] = 0;
         self.text_len = len;
     }
