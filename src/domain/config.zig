@@ -9,20 +9,19 @@ const Action = binding.Action;
 
 pub const Config = struct {
     language: Language = .auto,
+    autostart: bool = false,
+    run_as_admin: bool = false,
+    log_retention_days: u32 = 7,
+
     move_step: i32 = 20,
-    snap_threshold: i32 = 18,
     opacity_step: u8 = 15,
+    window_snap: bool = true,
+    snap_threshold: i32 = 18,
+    min_width: i32 = 120,
+    min_height: i32 = 100,
 
-    enable_border: bool = true,
-    enable_wheel_opacity: bool = true,
-    enable_autostart: bool = false,
-    enable_elevated: bool = false,
-    enable_window_snap: bool = true,
-
-    active_border_color: Color = Color.rgb(255, 136, 0),
-    min_window_width: i32 = 120,
-    min_window_height: i32 = 100,
-    log_max_days: u32 = 7,
+    border: bool = true,
+    border_color: Color = Color.rgb(255, 136, 0),
 
     ignore_processes: []const []const u8 = &.{},
     ignore_classes: []const []const u8 = &.{},

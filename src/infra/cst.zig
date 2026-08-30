@@ -36,29 +36,37 @@ pub const Value = union(enum) {
 
 pub const CstNode = union(enum) {
     raw: []const u8, // preserves comments, blank lines, indentation
+    table_header: struct {
+        name: []const u8,
+        raw_line: []const u8,
+    },
+    table_array_header: struct {
+        name: []const u8,
+        raw_line: []const u8,
+    },
     key_value: struct {
         indent: []const u8,
         key: []const u8,
         value: Value,
         trailing: []const u8,
     },
-    table_array_header: struct {
-        name: []const u8,
-        raw_line: []const u8,
-    },
 
     pub fn deinit(self: *CstNode, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .raw => |r| allocator.free(r),
+            .table_header => |*th| {
+                allocator.free(th.name);
+                allocator.free(th.raw_line);
+            },
+            .table_array_header => |*th| {
+                allocator.free(th.name);
+                allocator.free(th.raw_line);
+            },
             .key_value => |*kv| {
                 allocator.free(kv.indent);
                 allocator.free(kv.key);
                 kv.value.deinit(allocator);
                 allocator.free(kv.trailing);
-            },
-            .table_array_header => |*th| {
-                allocator.free(th.name);
-                allocator.free(th.raw_line);
             },
         }
     }
@@ -69,16 +77,11 @@ pub const CstDocument = struct {
     nodes: std.ArrayListUnmanaged(CstNode),
 
     pub fn init(allocator: std.mem.Allocator) CstDocument {
-        return .{
-            .allocator = allocator,
-            .nodes = .empty,
-        };
+        return .{ .allocator = allocator, .nodes = .empty };
     }
 
     pub fn deinit(self: *CstDocument) void {
-        for (self.nodes.items) |*node| {
-            node.deinit(self.allocator);
-        }
+        for (self.nodes.items) |*node| node.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
     }
 
@@ -90,15 +93,29 @@ pub const CstDocument = struct {
         while (lines.next()) |raw_line| {
             const line = std.mem.trimEnd(u8, raw_line, "\r");
             const trimmed = std.mem.trim(u8, line, " \t");
+
             if (trimmed.len == 0 or trimmed[0] == '#') {
                 try doc.nodes.append(allocator, .{ .raw = try allocator.dupe(u8, line) });
                 continue;
             }
 
+            // [[table]] array-of-tables
             if (std.mem.startsWith(u8, trimmed, "[[") and std.mem.endsWith(u8, trimmed, "]]")) {
                 const name = std.mem.trim(u8, trimmed[2 .. trimmed.len - 2], " \t");
                 try doc.nodes.append(allocator, .{
                     .table_array_header = .{
+                        .name = try allocator.dupe(u8, name),
+                        .raw_line = try allocator.dupe(u8, line),
+                    },
+                });
+                continue;
+            }
+
+            // [table] single table
+            if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+                const name = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t");
+                try doc.nodes.append(allocator, .{
+                    .table_header = .{
                         .name = try allocator.dupe(u8, name),
                         .raw_line = try allocator.dupe(u8, line),
                     },
@@ -118,12 +135,14 @@ pub const CstDocument = struct {
         return doc;
     }
 
-    /// In-place precise mutation: if the key exists, replaces its value; otherwise inserts before the first table declaration
-    pub fn setKeyValue(self: *CstDocument, key: []const u8, value: Value) !void {
+    /// In-place mutation of a root-level key: replaces existing value or inserts before first table
+    pub fn setRootKeyValue(self: *CstDocument, key: []const u8, value: Value) !void {
+        var in_root = true;
         for (self.nodes.items) |*node| {
             switch (node.*) {
+                .table_header, .table_array_header => in_root = false,
                 .key_value => |*kv| {
-                    if (std.ascii.eqlIgnoreCase(kv.key, key)) {
+                    if (in_root and std.ascii.eqlIgnoreCase(kv.key, key)) {
                         kv.value.deinit(self.allocator);
                         kv.value = try value.clone(self.allocator);
                         return;
@@ -133,10 +152,10 @@ pub const CstDocument = struct {
             }
         }
 
-        // Not found — find insertion point before the first table array header
+        // Not found — insert before the first table
         var insert_idx: usize = self.nodes.items.len;
         for (self.nodes.items, 0..) |node, i| {
-            if (node == .table_array_header) {
+            if (node == .table_header or node == .table_array_header) {
                 insert_idx = i;
                 break;
             }
@@ -157,10 +176,16 @@ pub const CstDocument = struct {
         for (self.nodes.items, 0..) |node, i| {
             switch (node) {
                 .raw => |r| try writer.writeAll(r),
+                .table_header => |th| try writer.writeAll(th.raw_line),
                 .table_array_header => |th| try writer.writeAll(th.raw_line),
                 .key_value => |kv| {
                     try writer.writeAll(kv.indent);
-                    try writer.writeAll(kv.key);
+                    // Quote keys containing '+' so they parse correctly as TOML strings
+                    if (std.mem.indexOfScalar(u8, kv.key, '+') != null) {
+                        try writer.print("\"{s}\"", .{kv.key});
+                    } else {
+                        try writer.writeAll(kv.key);
+                    }
                     try writer.writeAll(" = ");
                     try emitValue(kv.value, writer);
                     if (kv.trailing.len > 0) {
@@ -181,13 +206,16 @@ fn parseKeyValue(allocator: std.mem.Allocator, line: []const u8) !?CstNode {
     const raw_key = line[0..eq_pos];
     var raw_val_and_trail = line[eq_pos + 1 ..];
 
-    const key_trimmed = std.mem.trim(u8, raw_key, " \t\r");
+    var key_trimmed = std.mem.trim(u8, raw_key, " \t\r");
+    if (key_trimmed.len >= 2 and key_trimmed[0] == '"' and key_trimmed[key_trimmed.len - 1] == '"') {
+        key_trimmed = key_trimmed[1 .. key_trimmed.len - 1];
+    }
     if (key_trimmed.len == 0) return null;
 
     const indent_len = std.mem.indexOfNone(u8, raw_key, " \t") orelse 0;
     const indent = raw_key[0..indent_len];
 
-    // Strip trailing '#' comment (skipping '#' characters inside double-quoted strings)
+    // Strip trailing '#' comment (respecting double-quoted strings)
     var trailing_comment: []const u8 = "";
     var in_quotes = false;
     for (raw_val_and_trail, 0..) |c, idx| {

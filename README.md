@@ -34,88 +34,41 @@ Settings are saved in `%APPDATA%\zwin\config.toml`. The file is automatically re
 
 ```toml
 language = "auto"
+autostart = false
+run_as_admin = false
+log_retention_days = 7
+
 move_step = 20
-snap_threshold = 18
 opacity_step = 15
-enable_border = true
-enable_wheel_opacity = true
-enable_autostart = false
-enable_elevated = false
-enable_window_snap = true
-active_border_hex = "#FF8800"
-min_window_width = 120
-min_window_height = 100
-log_max_days = 7
+window_snap = true
+snap_threshold = 18
+min_width = 120
+min_height = 100
+
+border = true
+border_color = "#FF8800"
+
 ignore_processes = ["Photoshop.exe", "*blender*.exe", "mstsc.exe"]
 ignore_classes = ["UnityWndClass", "UnrealWindow"]
 
-[[bind]]
-keys = ["alt", "h"]
-action = "focus_left"
-
-[[bind]]
-keys = ["alt", "j"]
-action = "focus_down"
-
-[[bind]]
-keys = ["alt", "k"]
-action = "focus_up"
-
-[[bind]]
-keys = ["alt", "l"]
-action = "focus_right"
-
-[[bind]]
-keys = ["alt", "ctrl", "h"]
-action = "move_left"
-
-[[bind]]
-keys = ["alt", "ctrl", "j"]
-action = "move_down"
-
-[[bind]]
-keys = ["alt", "ctrl", "k"]
-action = "move_up"
-
-[[bind]]
-keys = ["alt", "ctrl", "l"]
-action = "move_right"
-
-[[bind]]
-keys = ["alt", "c"]
-action = "center"
-
-[[bind]]
-keys = ["alt", "t"]
-action = "toggle_topmost"
-
-[[bind]]
-keys = ["alt", "q"]
-action = "close"
-
-[[bind]]
-keys = ["alt", "m"]
-action = "toggle_maximize"
-
-[[bind]]
-keys = ["alt", "n"]
-action = "restore_last_minimized"
-
-[[bind]]
-keys = ["alt", "mouse_left"]
-action = "drag_move"
-
-[[bind]]
-keys = ["alt", "mouse_right"]
-action = "drag_resize"
-
-[[bind]]
-keys = ["alt", "mouse_middle"]
-action = "minimize"
-
-[[bind]]
-keys = ["alt", "mouse_wheel"]
-action = "adjust_opacity"
+[bind]
+"alt+h"            = "focus_left"
+"alt+j"            = "focus_down"
+"alt+k"            = "focus_up"
+"alt+l"            = "focus_right"
+"alt+ctrl+h"       = "move_left"
+"alt+ctrl+j"       = "move_down"
+"alt+ctrl+k"       = "move_up"
+"alt+ctrl+l"       = "move_right"
+"alt+c"            = "center"
+"alt+t"            = "toggle_topmost"
+"alt+q"            = "close"
+"alt+m"            = "toggle_maximize"
+"alt+n"            = "restore_last_minimized"
+"alt+mouse_left"   = "drag_move"
+"alt+mouse_right"  = "drag_resize"
+"alt+mouse_middle" = "minimize"
+"alt+mouse_wheel"  = "adjust_opacity"
 ```
 
 ### Settings Reference

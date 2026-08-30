@@ -118,7 +118,7 @@ pub const App = struct {
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .logger_inst = Logger.init(allocator, config.log_max_days),
+            .logger_inst = Logger.init(allocator, config.log_retention_days),
             .worker = .{},
             .border_mgr = undefined,
             .gesture = undefined,
@@ -335,13 +335,13 @@ pub const App = struct {
 
     // Ensure registry Run key and scheduled task are mutually exclusive
     pub fn syncAutostartState(self: *App) void {
-        if (!self.config.enable_autostart) {
+        if (!self.config.autostart) {
             Autostart.setEnabled(false);
             if (self.isAdmin()) self.deleteElevationTask();
             return;
         }
 
-        if (self.config.enable_elevated and self.isAdmin()) {
+        if (self.config.run_as_admin and self.isAdmin()) {
             Autostart.setEnabled(false);
             self.ensureElevationTask();
         } else {
@@ -355,12 +355,12 @@ pub const App = struct {
         if (self.quitting) return;
         logger.info("App", "reloading config from disk", .{});
 
-        const prev_autostart = self.config.enable_autostart;
-        const prev_elevated = self.config.enable_elevated;
+        const prev_autostart = self.config.autostart;
+        const prev_run_as_admin = self.config.run_as_admin;
         self.config.deinit(self.allocator);
         self.config = ConfigStore.load(self.allocator);
 
-        if (self.config.enable_autostart != prev_autostart or self.config.enable_elevated != prev_elevated) {
+        if (self.config.autostart != prev_autostart or self.config.run_as_admin != prev_run_as_admin) {
             self.syncAutostartState();
         }
 
@@ -579,8 +579,8 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 const strings = I18n.getStrings(app.config.language);
 
                 const pause_flags = t.MF_STRING | (if (app.hook_engine.paused.load(.acquire)) t.MF_CHECKED else t.MF_UNCHECKED);
-                const border_flags = t.MF_STRING | (if (app.config.enable_border) t.MF_CHECKED else t.MF_UNCHECKED);
-                const autostart_flags = t.MF_STRING | (if (app.config.enable_autostart) t.MF_CHECKED else t.MF_UNCHECKED);
+                const border_flags = t.MF_STRING | (if (app.config.border) t.MF_CHECKED else t.MF_UNCHECKED);
+                const autostart_flags = t.MF_STRING | (if (app.config.autostart) t.MF_CHECKED else t.MF_UNCHECKED);
                 const admin_flags = t.MF_STRING | (if (app.isAdmin()) t.MF_CHECKED else t.MF_UNCHECKED);
                 const admin_label = if (app.isAdmin()) strings.menu_normal else strings.menu_admin;
 
@@ -607,17 +607,17 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                     app.setPaused(!app.hook_engine.paused.load(.acquire));
                 },
                 CMD_TOGGLE_BORDER => {
-                    app.config.enable_border = !app.config.enable_border;
+                    app.config.border = !app.config.border;
                     if (t.GetForegroundWindow()) |current_fg| {
                         app.border_mgr.onFocusChange(current_fg);
                     }
-                    ConfigStore.updateBoolOption(app.allocator, "enable_border", app.config.enable_border);
+                    ConfigStore.updateBoolOption(app.allocator, "border", app.config.border);
                     app.last_config_write_ms = t.GetTickCount64();
                 },
                 CMD_TOGGLE_AUTOSTART => {
-                    app.config.enable_autostart = !app.config.enable_autostart;
+                    app.config.autostart = !app.config.autostart;
                     app.syncAutostartState();
-                    ConfigStore.updateBoolOption(app.allocator, "enable_autostart", app.config.enable_autostart);
+                    ConfigStore.updateBoolOption(app.allocator, "autostart", app.config.autostart);
                     app.last_config_write_ms = t.GetTickCount64();
                 },
                 CMD_RELOAD_CONFIG => app.reloadConfig(),
@@ -625,20 +625,20 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 CMD_OPEN_LOG_DIR => openDirInExplorer(app, .log),
                 CMD_RESTART => app.restart(),
                 CMD_TOGGLE_ADMIN => {
-                    const want_elevated = !app.isAdmin();
-                    app.config.enable_elevated = want_elevated;
+                    const want_admin = !app.isAdmin();
+                    app.config.run_as_admin = want_admin;
 
-                    if (!want_elevated and app.isAdmin()) app.deleteElevationTask();
+                    if (!want_admin and app.isAdmin()) app.deleteElevationTask();
 
                     app.syncAutostartState();
-                    ConfigStore.updateBoolOption(app.allocator, "enable_elevated", want_elevated);
+                    ConfigStore.updateBoolOption(app.allocator, "run_as_admin", want_admin);
                     app.last_config_write_ms = t.GetTickCount64();
 
-                    const launched = if (want_elevated) app.relaunchAsAdmin() else app.relaunchUnelevated();
+                    const launched = if (want_admin) app.relaunchAsAdmin() else app.relaunchUnelevated();
                     if (!launched) {
-                        app.config.enable_elevated = !want_elevated;
+                        app.config.run_as_admin = !want_admin;
                         app.syncAutostartState();
-                        ConfigStore.updateBoolOption(app.allocator, "enable_elevated", !want_elevated);
+                        ConfigStore.updateBoolOption(app.allocator, "run_as_admin", !want_admin);
                         logger.info("App", "elevation preference rolled back to match current token", .{});
                     }
                 },

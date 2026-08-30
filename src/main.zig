@@ -30,7 +30,7 @@ pub fn main() !void {
 
     // Early elevation handoff before initializing subsystems; fall back on cancel
     if (t.IsUserAnAdmin() == 0) {
-        if (cfg.enable_elevated) {
+        if (cfg.run_as_admin) {
             var path_buf: [1024]u16 = undefined;
             const len = t.GetModuleFileNameW(null, &path_buf, path_buf.len);
             if (len > 0 and len < path_buf.len) {

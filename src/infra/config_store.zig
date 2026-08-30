@@ -28,66 +28,48 @@ const ArrayListWriter = struct {
     }
 };
 
-const VK_LEFT: u32 = 0x25;
-const VK_UP: u32 = 0x26;
-const VK_RIGHT: u32 = 0x27;
-const VK_DOWN: u32 = 0x28;
-
 pub const KeyParser = struct {
-    pub fn parseToken(tok: []const u8, mods: *ModifierMask) ?Trigger {
-        if (std.ascii.eqlIgnoreCase(tok, "alt")) {
-            mods.alt = true;
-            return null;
-        } else if (std.ascii.eqlIgnoreCase(tok, "ctrl") or std.ascii.eqlIgnoreCase(tok, "control")) {
-            mods.ctrl = true;
-            return null;
-        } else if (std.ascii.eqlIgnoreCase(tok, "shift")) {
-            mods.shift = true;
-            return null;
-        } else if (std.ascii.eqlIgnoreCase(tok, "win") or std.ascii.eqlIgnoreCase(tok, "super")) {
-            mods.win = true;
-            return null;
+    /// Parse a single combo string like "alt+ctrl+h" into ModifierMask + Trigger
+    pub fn parseKeyCombo(combo_str: []const u8) ?struct { mods: ModifierMask, trigger: Trigger } {
+        var mods = ModifierMask{};
+        var final_trigger: ?Trigger = null;
+
+        var it = std.mem.splitAny(u8, combo_str, "+");
+        while (it.next()) |part| {
+            const tok = std.mem.trim(u8, part, " \t\r");
+            if (tok.len == 0) continue;
+
+            if (std.ascii.eqlIgnoreCase(tok, "alt")) {
+                mods.alt = true;
+            } else if (std.ascii.eqlIgnoreCase(tok, "ctrl") or std.ascii.eqlIgnoreCase(tok, "control")) {
+                mods.ctrl = true;
+            } else if (std.ascii.eqlIgnoreCase(tok, "shift")) {
+                mods.shift = true;
+            } else if (std.ascii.eqlIgnoreCase(tok, "win") or std.ascii.eqlIgnoreCase(tok, "super")) {
+                mods.win = true;
+            } else if (std.ascii.eqlIgnoreCase(tok, "mouse_left") or std.ascii.eqlIgnoreCase(tok, "left_click")) {
+                final_trigger = .{ .mouse = .left };
+            } else if (std.ascii.eqlIgnoreCase(tok, "mouse_right") or std.ascii.eqlIgnoreCase(tok, "right_click")) {
+                final_trigger = .{ .mouse = .right };
+            } else if (std.ascii.eqlIgnoreCase(tok, "mouse_middle") or std.ascii.eqlIgnoreCase(tok, "middle_click")) {
+                final_trigger = .{ .mouse = .middle };
+            } else if (std.ascii.eqlIgnoreCase(tok, "mouse_wheel") or std.ascii.eqlIgnoreCase(tok, "wheel")) {
+                final_trigger = .{ .mouse = .wheel };
+            } else if (std.ascii.eqlIgnoreCase(tok, "left") or std.ascii.eqlIgnoreCase(tok, "arrowleft")) {
+                final_trigger = .{ .key = 0x25 };
+            } else if (std.ascii.eqlIgnoreCase(tok, "up") or std.ascii.eqlIgnoreCase(tok, "arrowup")) {
+                final_trigger = .{ .key = 0x26 };
+            } else if (std.ascii.eqlIgnoreCase(tok, "right") or std.ascii.eqlIgnoreCase(tok, "arrowright")) {
+                final_trigger = .{ .key = 0x27 };
+            } else if (std.ascii.eqlIgnoreCase(tok, "down") or std.ascii.eqlIgnoreCase(tok, "arrowdown")) {
+                final_trigger = .{ .key = 0x28 };
+            } else if (tok.len == 1 and std.ascii.isAlphanumeric(tok[0])) {
+                final_trigger = .{ .key = std.ascii.toUpper(tok[0]) };
+            }
         }
 
-        // Mouse buttons
-        if (std.ascii.eqlIgnoreCase(tok, "mouse_left") or std.ascii.eqlIgnoreCase(tok, "left_click")) {
-            return .{ .mouse = .left };
-        } else if (std.ascii.eqlIgnoreCase(tok, "mouse_right") or std.ascii.eqlIgnoreCase(tok, "right_click")) {
-            return .{ .mouse = .right };
-        } else if (std.ascii.eqlIgnoreCase(tok, "mouse_middle") or std.ascii.eqlIgnoreCase(tok, "middle_click")) {
-            return .{ .mouse = .middle };
-        } else if (std.ascii.eqlIgnoreCase(tok, "mouse_wheel") or std.ascii.eqlIgnoreCase(tok, "wheel")) {
-            return .{ .mouse = .wheel };
-        }
-
-        // Arrow keys
-        if (std.ascii.eqlIgnoreCase(tok, "left") or std.ascii.eqlIgnoreCase(tok, "arrowleft")) return .{ .key = VK_LEFT };
-        if (std.ascii.eqlIgnoreCase(tok, "up") or std.ascii.eqlIgnoreCase(tok, "arrowup")) return .{ .key = VK_UP };
-        if (std.ascii.eqlIgnoreCase(tok, "right") or std.ascii.eqlIgnoreCase(tok, "arrowright")) return .{ .key = VK_RIGHT };
-        if (std.ascii.eqlIgnoreCase(tok, "down") or std.ascii.eqlIgnoreCase(tok, "arrowdown")) return .{ .key = VK_DOWN };
-
-        // Common control & function keys
-        if (std.ascii.eqlIgnoreCase(tok, "esc") or std.ascii.eqlIgnoreCase(tok, "escape")) return .{ .key = 0x1B };
-        if (std.ascii.eqlIgnoreCase(tok, "tab")) return .{ .key = 0x09 };
-        if (std.ascii.eqlIgnoreCase(tok, "space")) return .{ .key = 0x20 };
-        if (std.ascii.eqlIgnoreCase(tok, "enter") or std.ascii.eqlIgnoreCase(tok, "return")) return .{ .key = 0x0D };
-        if (std.ascii.eqlIgnoreCase(tok, "backspace")) return .{ .key = 0x08 };
-        if (std.ascii.eqlIgnoreCase(tok, "delete") or std.ascii.eqlIgnoreCase(tok, "del")) return .{ .key = 0x2E };
-        if (std.ascii.eqlIgnoreCase(tok, "home")) return .{ .key = 0x24 };
-        if (std.ascii.eqlIgnoreCase(tok, "end")) return .{ .key = 0x23 };
-        if (std.ascii.eqlIgnoreCase(tok, "pageup") or std.ascii.eqlIgnoreCase(tok, "pgup")) return .{ .key = 0x21 };
-        if (std.ascii.eqlIgnoreCase(tok, "pagedown") or std.ascii.eqlIgnoreCase(tok, "pgdn")) return .{ .key = 0x22 };
-
-        // F1 - F12
-        if (tok.len >= 2 and (tok[0] == 'f' or tok[0] == 'F')) {
-            if (std.fmt.parseInt(u8, tok[1..], 10)) |f_num| {
-                if (f_num >= 1 and f_num <= 12) return .{ .key = 0x70 + @as(u32, f_num) - 1 };
-            } else |_| {}
-        }
-
-        // Single alphanumeric character
-        if (tok.len == 1 and std.ascii.isAlphanumeric(tok[0])) {
-            return .{ .key = std.ascii.toUpper(tok[0]) };
+        if (final_trigger) |t| {
+            return .{ .mods = mods, .trigger = t };
         }
         return null;
     }
@@ -95,93 +77,44 @@ pub const KeyParser = struct {
 
 const DEFAULT_CONFIG_TOML =
     \\# ==========================================
-    \\# zwin configuration file - modern window gesture and tiling manager
+    \\# zwin 配置文件
     \\# ==========================================
     \\language = "auto"
+    \\autostart = false
+    \\run_as_admin = false
+    \\log_retention_days = 7
+    \\
     \\move_step = 20
-    \\snap_threshold = 18
     \\opacity_step = 15
-    \\enable_border = true
-    \\enable_wheel_opacity = true
-    \\enable_autostart = false
-    \\enable_elevated = false
-    \\enable_window_snap = true
-    \\active_border_hex = "#FF8800"
-    \\min_window_width = 120
-    \\min_window_height = 100
-    \\log_max_days = 7
+    \\window_snap = true
+    \\snap_threshold = 18
+    \\min_width = 120
+    \\min_height = 100
     \\
-    \\# Directional focus (Alt + H/J/K/L)
-    \\[[bind]]
-    \\keys = ["alt", "h"]
-    \\action = "focus_left"
+    \\border = true
+    \\border_color = "#FF8800"
     \\
-    \\[[bind]]
-    \\keys = ["alt", "j"]
-    \\action = "focus_down"
+    \\ignore_processes = ["Photoshop.exe", "*blender*.exe", "mstsc.exe"]
+    \\ignore_classes = ["UnityWndClass", "UnrealWindow"]
     \\
-    \\[[bind]]
-    \\keys = ["alt", "k"]
-    \\action = "focus_up"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "l"]
-    \\action = "focus_right"
-    \\
-    \\# Window step displacement (Alt + Ctrl + H/J/K/L)
-    \\[[bind]]
-    \\keys = ["alt", "ctrl", "h"]
-    \\action = "move_left"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "ctrl", "j"]
-    \\action = "move_down"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "ctrl", "k"]
-    \\action = "move_up"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "ctrl", "l"]
-    \\action = "move_right"
-    \\
-    \\# Common actions
-    \\[[bind]]
-    \\keys = ["alt", "c"]
-    \\action = "center"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "t"]
-    \\action = "toggle_topmost"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "q"]
-    \\action = "close"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "m"]
-    \\action = "toggle_maximize"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "n"]
-    \\action = "restore_last_minimized"
-    \\
-    \\# Mouse streaming gestures
-    \\[[bind]]
-    \\keys = ["alt", "mouse_left"]
-    \\action = "drag_move"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "mouse_right"]
-    \\action = "drag_resize"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "mouse_middle"]
-    \\action = "minimize"
-    \\
-    \\[[bind]]
-    \\keys = ["alt", "mouse_wheel"]
-    \\action = "adjust_opacity"
+    \\[bind]
+    \\"alt+h" = "focus_left"
+    \\"alt+j" = "focus_down"
+    \\"alt+k" = "focus_up"
+    \\"alt+l" = "focus_right"
+    \\"alt+ctrl+h" = "move_left"
+    \\"alt+ctrl+j" = "move_down"
+    \\"alt+ctrl+k" = "move_up"
+    \\"alt+ctrl+l" = "move_right"
+    \\"alt+c" = "center"
+    \\"alt+t" = "toggle_topmost"
+    \\"alt+q" = "close"
+    \\"alt+m" = "toggle_maximize"
+    \\"alt+n" = "restore_last_minimized"
+    \\"alt+mouse_left" = "drag_move"
+    \\"alt+mouse_right" = "drag_resize"
+    \\"alt+mouse_middle" = "minimize"
+    \\"alt+mouse_wheel" = "adjust_opacity"
 ;
 
 pub const ConfigStore = struct {
@@ -205,7 +138,7 @@ pub const ConfigStore = struct {
         return parseToml(allocator, bytes);
     }
 
-    /// When a tray toggle changes a boolean option, mutate the TOML CST in place preserving all user comments and layout
+    /// Atomically mutate a root-level boolean in the TOML CST, preserving all comments and layout
     pub fn updateBoolOption(allocator: std.mem.Allocator, key: []const u8, value: bool) void {
         const cfg_dir = Paths.getConfigDir(allocator) catch return;
         defer allocator.free(cfg_dir);
@@ -218,7 +151,7 @@ pub const ConfigStore = struct {
         var doc = cst.CstDocument.parse(allocator, bytes) catch return;
         defer doc.deinit();
 
-        doc.setKeyValue(key, .{ .boolean = value }) catch return;
+        doc.setRootKeyValue(key, .{ .boolean = value }) catch return;
 
         var out = std.ArrayListUnmanaged(u8).empty;
         defer out.deinit(allocator);
@@ -237,76 +170,45 @@ pub const ConfigStore = struct {
 
         var bindings_list = std.ArrayListUnmanaged(Binding).empty;
         var in_bind_table = false;
-        var cur_keys = std.ArrayListUnmanaged([]const u8).empty;
-        defer cur_keys.deinit(allocator);
-        var cur_action: ?Action = null;
-
-        const flush_binding = struct {
-            fn run(b_list: *std.ArrayListUnmanaged(Binding), k_list: *std.ArrayListUnmanaged([]const u8), act_opt: ?Action, alloc: std.mem.Allocator) void {
-                if (act_opt) |act| {
-                    var mods = ModifierMask{};
-                    var final_trigger: ?Trigger = null;
-                    for (k_list.items) |tok| {
-                        if (KeyParser.parseToken(tok, &mods)) |trig| {
-                            final_trigger = trig;
-                        }
-                    }
-                    if (final_trigger) |trig| {
-                        b_list.append(alloc, .{
-                            .mods = mods,
-                            .trigger = trig,
-                            .action = act,
-                        }) catch {};
-                    }
-                }
-                k_list.clearRetainingCapacity();
-            }
-        }.run;
 
         for (doc.nodes.items) |node| {
             switch (node) {
-                .table_array_header => |th| {
-                    if (in_bind_table) {
-                        flush_binding(&bindings_list, &cur_keys, cur_action, allocator);
-                        cur_action = null;
-                    }
+                .table_header => |th| {
                     in_bind_table = std.ascii.eqlIgnoreCase(th.name, "bind");
+                },
+                .table_array_header => {
+                    // Legacy [[bind]] support — silently skip, user should migrate
+                    in_bind_table = false;
                 },
                 .key_value => |kv| {
                     if (in_bind_table) {
-                        if (std.ascii.eqlIgnoreCase(kv.key, "keys")) {
-                            switch (kv.value) {
-                                .array => |arr| {
-                                    for (arr.items) |item| {
-                                        if (item == .string) cur_keys.append(allocator, item.string) catch {};
-                                    }
-                                },
-                                else => {},
-                            }
-                        } else if (std.ascii.eqlIgnoreCase(kv.key, "action")) {
-                            if (kv.value == .string) {
-                                cur_action = Action.fromString(kv.value.string);
+                        // New format: "alt+h" = "focus_left"
+                        if (kv.value == .string) {
+                            if (Action.fromString(kv.value.string)) |act| {
+                                if (KeyParser.parseKeyCombo(kv.key)) |parsed| {
+                                    bindings_list.append(allocator, .{
+                                        .mods = parsed.mods,
+                                        .trigger = parsed.trigger,
+                                        .action = act,
+                                    }) catch {};
+                                }
                             }
                         }
                     } else {
-                        // Root-level config options
-                        if (std.ascii.eqlIgnoreCase(kv.key, "language") and kv.value == .string) {
-                            cfg.language = Language.fromString(kv.value.string);
-                        }
-                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_border") and kv.value == .boolean) cfg.enable_border = kv.value.boolean;
-                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_wheel_opacity") and kv.value == .boolean) cfg.enable_wheel_opacity = kv.value.boolean;
-                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_autostart") and kv.value == .boolean) cfg.enable_autostart = kv.value.boolean;
-                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_elevated") and kv.value == .boolean) cfg.enable_elevated = kv.value.boolean;
-                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_window_snap") and kv.value == .boolean) cfg.enable_window_snap = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "language") and kv.value == .string) cfg.language = Language.fromString(kv.value.string);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "autostart") and kv.value == .boolean) cfg.autostart = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "run_as_admin") and kv.value == .boolean) cfg.run_as_admin = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "border") and kv.value == .boolean) cfg.border = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "window_snap") and kv.value == .boolean) cfg.window_snap = kv.value.boolean;
                         if (std.ascii.eqlIgnoreCase(kv.key, "move_step") and kv.value == .integer) cfg.move_step = @intCast(kv.value.integer);
                         if (std.ascii.eqlIgnoreCase(kv.key, "snap_threshold") and kv.value == .integer) cfg.snap_threshold = @intCast(kv.value.integer);
                         if (std.ascii.eqlIgnoreCase(kv.key, "opacity_step") and kv.value == .integer) cfg.opacity_step = @intCast(kv.value.integer);
-                        if (std.ascii.eqlIgnoreCase(kv.key, "active_border_hex") and kv.value == .string) {
-                            if (Color.fromHex(kv.value.string)) |c| cfg.active_border_color = c;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "border_color") and kv.value == .string) {
+                            if (Color.fromHex(kv.value.string)) |c| cfg.border_color = c;
                         }
-                        if (std.ascii.eqlIgnoreCase(kv.key, "min_window_width") and kv.value == .integer) cfg.min_window_width = @intCast(kv.value.integer);
-                        if (std.ascii.eqlIgnoreCase(kv.key, "min_window_height") and kv.value == .integer) cfg.min_window_height = @intCast(kv.value.integer);
-                        if (std.ascii.eqlIgnoreCase(kv.key, "log_max_days") and kv.value == .integer) cfg.log_max_days = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "min_width") and kv.value == .integer) cfg.min_width = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "min_height") and kv.value == .integer) cfg.min_height = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "log_retention_days") and kv.value == .integer) cfg.log_retention_days = @intCast(kv.value.integer);
                         if (std.ascii.eqlIgnoreCase(kv.key, "ignore_processes") and kv.value == .array) {
                             var list = std.ArrayListUnmanaged([]const u8).empty;
                             for (kv.value.array.items) |item| {
@@ -331,10 +233,6 @@ pub const ConfigStore = struct {
             }
         }
 
-        if (in_bind_table) {
-            flush_binding(&bindings_list, &cur_keys, cur_action, allocator);
-        }
-
         cfg.bindings = bindings_list.toOwnedSlice(allocator) catch &.{};
         cfg.updateActiveModifiersUnion();
         return cfg;
@@ -342,25 +240,24 @@ pub const ConfigStore = struct {
 };
 
 test "KeyParser parses modifier + key tokens" {
-    var mods = ModifierMask{};
-
-    try std.testing.expect(KeyParser.parseToken("alt", &mods) == null);
-    try std.testing.expect(mods.alt);
-
-    mods = ModifierMask{};
-    try std.testing.expect(KeyParser.parseToken("ctrl", &mods) == null);
-    try std.testing.expect(mods.ctrl);
-
-    mods = ModifierMask{};
-    const trig = KeyParser.parseToken("h", &mods) orelse unreachable;
-    try std.testing.expectEqual(@as(u32, 'H'), switch (trig) {
+    const result = KeyParser.parseKeyCombo("alt+h") orelse unreachable;
+    try std.testing.expect(result.mods.alt);
+    try std.testing.expectEqual(@as(u32, 'H'), switch (result.trigger) {
         .key => |v| v,
         .mouse => unreachable,
     });
 
-    mods = ModifierMask{};
-    const mtrig = KeyParser.parseToken("mouse_left", &mods) orelse unreachable;
-    try std.testing.expectEqual(binding.MouseTrigger.left, switch (mtrig) {
+    const result2 = KeyParser.parseKeyCombo("alt+ctrl+h") orelse unreachable;
+    try std.testing.expect(result2.mods.alt);
+    try std.testing.expect(result2.mods.ctrl);
+    try std.testing.expectEqual(@as(u32, 'H'), switch (result2.trigger) {
+        .key => |v| v,
+        .mouse => unreachable,
+    });
+
+    const result3 = KeyParser.parseKeyCombo("alt+mouse_left") orelse unreachable;
+    try std.testing.expect(result3.mods.alt);
+    try std.testing.expectEqual(binding.MouseTrigger.left, switch (result3.trigger) {
         .mouse => |m| m,
         .key => unreachable,
     });
@@ -372,6 +269,8 @@ test "ConfigStore TOML roundtrip preserves bindings" {
     defer cfg.deinit(allocator);
 
     try std.testing.expectEqual(@as(i32, 20), cfg.move_step);
-    try std.testing.expectEqual(true, cfg.enable_border);
+    try std.testing.expectEqual(true, cfg.border);
+    try std.testing.expectEqual(false, cfg.autostart);
+    try std.testing.expectEqual(false, cfg.run_as_admin);
     try std.testing.expect(cfg.bindings.len > 0);
 }

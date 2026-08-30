@@ -97,7 +97,7 @@ pub const GestureStateMachine = struct {
     ) void {
         const win = Window.init(target.hwnd);
         var snap_targets = geom.SnapTargetList{};
-        if (self.config.enable_window_snap) {
+        if (self.config.window_snap) {
             Window.collectSnapTargets(target.hwnd, self.config, &snap_targets);
         }
         self.state = .{ .dragging = .{
@@ -123,7 +123,7 @@ pub const GestureStateMachine = struct {
     ) void {
         const win = Window.init(target.hwnd);
         var snap_targets = geom.SnapTargetList{};
-        if (self.config.enable_window_snap) {
+        if (self.config.window_snap) {
             Window.collectSnapTargets(target.hwnd, self.config, &snap_targets);
         }
         self.state = .{ .resizing = .{
@@ -170,7 +170,7 @@ pub const GestureStateMachine = struct {
                         wa,
                         a.snap_targets.slice(),
                         self.config.snap_threshold,
-                        self.config.enable_window_snap,
+                        self.config.window_snap,
                     );
                 }
 
@@ -190,8 +190,8 @@ pub const GestureStateMachine = struct {
                     r.start_bounds,
                     delta,
                     r.sector,
-                    self.config.min_window_width,
-                    self.config.min_window_height,
+                    self.config.min_width,
+                    self.config.min_height,
                 );
 
                 if (r.work_area) |wa| {
@@ -201,7 +201,7 @@ pub const GestureStateMachine = struct {
                         r.snap_targets.slice(),
                         r.sector,
                         self.config.snap_threshold,
-                        self.config.enable_window_snap,
+                        self.config.window_snap,
                     );
                 }
 

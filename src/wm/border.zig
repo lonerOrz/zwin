@@ -15,7 +15,7 @@ pub const BorderManager = struct {
     }
 
     pub fn onFocusChange(self: *BorderManager, raw_hwnd: t.HWND) void {
-        if (!self.config.enable_border) {
+        if (!self.config.border) {
             self.reset();
             return;
         }
@@ -37,7 +37,7 @@ pub const BorderManager = struct {
     }
 
     pub fn refreshCurrent(self: *BorderManager, raw_hwnd: t.HWND) void {
-        if (!self.config.enable_border) return;
+        if (!self.config.border) return;
         const true_hwnd = Window.getTrueTopLevel(raw_hwnd) orelse return;
         if (Window.init(true_hwnd).isIgnored(self.config)) {
             self.reset();
@@ -56,7 +56,7 @@ pub const BorderManager = struct {
 
     fn applyBorder(self: *BorderManager, hwnd: t.HWND) void {
         if (t.IsWindowVisible(hwnd) != 0) {
-            const cref = self.config.active_border_color.toColorRef();
+            const cref = self.config.border_color.toColorRef();
             const hr = t.DwmSetWindowAttribute(hwnd, t.DWMWA_BORDER_COLOR, &cref, @sizeOf(u32));
             if (hr == 0) {
                 self.last_active = hwnd;
