@@ -94,7 +94,7 @@ pub const WindowWorker = struct {
 
     fn workerLoop(self: *WindowWorker) void {
         // Boost worker thread priority for responsive window positioning
-        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
+        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_ABOVE_NORMAL);
         while (true) {
             t.AcquireSRWLockExclusive(&self.lock);
             while (self.fifo_len == 0 and self.streaming_slot == null and self.running) {
@@ -127,7 +127,6 @@ pub const WindowWorker = struct {
 
                 if (task.target.isValid(current_session)) {
                     executeStreaming(task.target.hwnd, task.op);
-                    _ = t.DwmFlush();
                 }
                 continue;
             }

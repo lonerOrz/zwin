@@ -82,7 +82,6 @@ pub const App = struct {
 
         self.border_mgr = BorderManager.init(&self.config);
         self.gesture = GestureStateMachine.init(&self.worker, &self.config, &self.osd);
-        self.hook_engine = InputEngine.init(&self.gesture, &self.config, &self.intent_handler);
         self.intent_handler = IntentHandler.init(
             &self.worker,
             &self.border_mgr,
@@ -90,6 +89,7 @@ pub const App = struct {
             &self.gesture,
             &self.config,
         );
+        self.hook_engine = InputEngine.init(&self.gesture, &self.config, &self.intent_handler);
 
         App.global = self;
         return self;
@@ -97,8 +97,8 @@ pub const App = struct {
 
     pub fn start(self: *App, hinst: ?t.HINSTANCE) !void {
         // Boost scheduling priority to avoid LowLevelHooksTimeout under load
-        _ = t.SetPriorityClass(t.GetCurrentProcess(), t.HIGH_PRIORITY_CLASS);
-        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
+        _ = t.SetPriorityClass(t.GetCurrentProcess(), t.ABOVE_NORMAL_PRIORITY_CLASS);
+        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_ABOVE_NORMAL);
 
         _ = self.worker.invalidateSession();
 
@@ -382,14 +382,23 @@ fn winEventCallback(_: t.HWINEVENTHOOK, event: u32, hwnd: t.HWND, idObject: i32,
             const target = if (@intFromPtr(hwnd) != 0) hwnd else (t.GetForegroundWindow() orelse return);
             app.enqueueIntentFromWinEvent(.{ .foreground_changed = target });
         },
-        t.EVENT_OBJECT_SHOW, t.EVENT_SYSTEM_MINIMIZEEND => app.refreshActiveBorder(),
+        t.EVENT_OBJECT_SHOW => app.refreshActiveBorder(),
+        t.EVENT_SYSTEM_MINIMIZEEND => {
+            app.intent_handler.removeMinimized(hwnd);
+            app.refreshActiveBorder();
+        },
         t.EVENT_SYSTEM_MINIMIZESTART => {
             if (Window.getTrueTopLevel(hwnd)) |_| {
                 app.intent_handler.recordMinimized(hwnd);
             }
+            app.border_mgr.onWindowClosedOrHidden(hwnd);
+            app.refreshActiveBorder();
+        },
+        t.EVENT_OBJECT_DESTROY => {
+            app.intent_handler.removeMinimized(hwnd);
             app.enqueueIntentFromWinEvent(.{ .window_closed_or_hidden = hwnd });
         },
-        t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE => {
+        t.EVENT_OBJECT_HIDE => {
             app.enqueueIntentFromWinEvent(.{ .window_closed_or_hidden = hwnd });
         },
         else => {},
