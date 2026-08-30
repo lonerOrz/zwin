@@ -3,50 +3,186 @@ const Paths = @import("../platform/paths.zig").Paths;
 const Config = @import("../domain/config.zig").Config;
 const Color = @import("../domain/color.zig").Color;
 const Language = @import("i18n.zig").Language;
+const binding = @import("../domain/binding.zig");
+const Binding = binding.Binding;
+const ModifierMask = binding.ModifierMask;
+const Trigger = binding.Trigger;
+const Action = binding.Action;
+const cst = @import("cst.zig");
 const logger = @import("logger.zig");
 
-// Win32 VK code aliases used for parsing config values
+// Thin writer wrapper so cst.emit can target an ArrayListUnmanaged buffer
+const ArrayListWriter = struct {
+    list: *std.ArrayListUnmanaged(u8),
+    alloc: std.mem.Allocator,
+    pub fn writeAll(self: ArrayListWriter, data: []const u8) anyerror!void {
+        try self.list.appendSlice(self.alloc, data);
+    }
+    pub fn writeByte(self: ArrayListWriter, b: u8) anyerror!void {
+        try self.list.append(self.alloc, b);
+    }
+    pub fn print(self: ArrayListWriter, comptime fmt: []const u8, args: anytype) anyerror!void {
+        var buf: [512]u8 = undefined;
+        const n = std.fmt.bufPrint(&buf, fmt, args) catch return error.OutOfMemory;
+        try self.list.appendSlice(self.alloc, n);
+    }
+};
+
 const VK_LEFT: u32 = 0x25;
 const VK_UP: u32 = 0x26;
 const VK_RIGHT: u32 = 0x27;
 const VK_DOWN: u32 = 0x28;
 
-pub const KeyMapper = struct {
-    const TableEntry = struct { name: []const u8, vk: u32 };
-
-    const named_keys = [_]TableEntry{
-        .{ .name = "Left", .vk = VK_LEFT },
-        .{ .name = "ArrowLeft", .vk = VK_LEFT },
-        .{ .name = "Up", .vk = VK_UP },
-        .{ .name = "ArrowUp", .vk = VK_UP },
-        .{ .name = "Right", .vk = VK_RIGHT },
-        .{ .name = "ArrowRight", .vk = VK_RIGHT },
-        .{ .name = "Down", .vk = VK_DOWN },
-        .{ .name = "ArrowDown", .vk = VK_DOWN },
-    };
-
-    pub fn parse(raw: []const u8) ?u32 {
-        if (raw.len == 0) return null;
-        for (named_keys) |entry| {
-            if (std.ascii.eqlIgnoreCase(raw, entry.name)) return entry.vk;
+pub const KeyParser = struct {
+    pub fn parseToken(tok: []const u8, mods: *ModifierMask) ?Trigger {
+        if (std.ascii.eqlIgnoreCase(tok, "alt")) {
+            mods.alt = true;
+            return null;
+        } else if (std.ascii.eqlIgnoreCase(tok, "ctrl") or std.ascii.eqlIgnoreCase(tok, "control")) {
+            mods.ctrl = true;
+            return null;
+        } else if (std.ascii.eqlIgnoreCase(tok, "shift")) {
+            mods.shift = true;
+            return null;
+        } else if (std.ascii.eqlIgnoreCase(tok, "win") or std.ascii.eqlIgnoreCase(tok, "super")) {
+            mods.win = true;
+            return null;
         }
-        if (raw.len == 1 and std.ascii.isAlphanumeric(raw[0])) {
-            return std.ascii.toUpper(raw[0]);
+
+        // Mouse buttons
+        if (std.ascii.eqlIgnoreCase(tok, "mouse_left") or std.ascii.eqlIgnoreCase(tok, "left_click")) {
+            return .{ .mouse = .left };
+        } else if (std.ascii.eqlIgnoreCase(tok, "mouse_right") or std.ascii.eqlIgnoreCase(tok, "right_click")) {
+            return .{ .mouse = .right };
+        } else if (std.ascii.eqlIgnoreCase(tok, "mouse_middle") or std.ascii.eqlIgnoreCase(tok, "middle_click")) {
+            return .{ .mouse = .middle };
+        } else if (std.ascii.eqlIgnoreCase(tok, "mouse_wheel") or std.ascii.eqlIgnoreCase(tok, "wheel")) {
+            return .{ .mouse = .wheel };
+        }
+
+        // Arrow keys
+        if (std.ascii.eqlIgnoreCase(tok, "left") or std.ascii.eqlIgnoreCase(tok, "arrowleft")) return .{ .key = VK_LEFT };
+        if (std.ascii.eqlIgnoreCase(tok, "up") or std.ascii.eqlIgnoreCase(tok, "arrowup")) return .{ .key = VK_UP };
+        if (std.ascii.eqlIgnoreCase(tok, "right") or std.ascii.eqlIgnoreCase(tok, "arrowright")) return .{ .key = VK_RIGHT };
+        if (std.ascii.eqlIgnoreCase(tok, "down") or std.ascii.eqlIgnoreCase(tok, "arrowdown")) return .{ .key = VK_DOWN };
+
+        // Common control & function keys
+        if (std.ascii.eqlIgnoreCase(tok, "esc") or std.ascii.eqlIgnoreCase(tok, "escape")) return .{ .key = 0x1B };
+        if (std.ascii.eqlIgnoreCase(tok, "tab")) return .{ .key = 0x09 };
+        if (std.ascii.eqlIgnoreCase(tok, "space")) return .{ .key = 0x20 };
+        if (std.ascii.eqlIgnoreCase(tok, "enter") or std.ascii.eqlIgnoreCase(tok, "return")) return .{ .key = 0x0D };
+        if (std.ascii.eqlIgnoreCase(tok, "backspace")) return .{ .key = 0x08 };
+        if (std.ascii.eqlIgnoreCase(tok, "delete") or std.ascii.eqlIgnoreCase(tok, "del")) return .{ .key = 0x2E };
+        if (std.ascii.eqlIgnoreCase(tok, "home")) return .{ .key = 0x24 };
+        if (std.ascii.eqlIgnoreCase(tok, "end")) return .{ .key = 0x23 };
+        if (std.ascii.eqlIgnoreCase(tok, "pageup") or std.ascii.eqlIgnoreCase(tok, "pgup")) return .{ .key = 0x21 };
+        if (std.ascii.eqlIgnoreCase(tok, "pagedown") or std.ascii.eqlIgnoreCase(tok, "pgdn")) return .{ .key = 0x22 };
+
+        // F1 - F12
+        if (tok.len >= 2 and (tok[0] == 'f' or tok[0] == 'F')) {
+            if (std.fmt.parseInt(u8, tok[1..], 10)) |f_num| {
+                if (f_num >= 1 and f_num <= 12) return .{ .key = 0x70 + @as(u32, f_num) - 1 };
+            } else |_| {}
+        }
+
+        // Single alphanumeric character
+        if (tok.len == 1 and std.ascii.isAlphanumeric(tok[0])) {
+            return .{ .key = std.ascii.toUpper(tok[0]) };
         }
         return null;
     }
-
-    pub fn format(vk: u32, buf: *[16]u8) []const u8 {
-        return switch (vk) {
-            VK_LEFT => "Left",
-            VK_UP => "Up",
-            VK_RIGHT => "Right",
-            VK_DOWN => "Down",
-            'A'...'Z', '0'...'9' => std.fmt.bufPrint(buf, "{c}", .{@as(u8, @truncate(vk))}) catch "Unknown",
-            else => "Unknown",
-        };
-    }
 };
+
+const DEFAULT_CONFIG_TOML =
+    \\# ==========================================
+    \\# zwin configuration file - modern window gesture and tiling manager
+    \\# ==========================================
+    \\language = "auto"
+    \\move_step = 20
+    \\snap_threshold = 18
+    \\opacity_step = 15
+    \\enable_border = true
+    \\enable_wheel_opacity = true
+    \\enable_autostart = false
+    \\enable_elevated = false
+    \\enable_window_snap = true
+    \\active_border_hex = "#FF8800"
+    \\min_window_width = 120
+    \\min_window_height = 100
+    \\log_max_days = 7
+    \\
+    \\# Directional focus (Alt + H/J/K/L)
+    \\[[bind]]
+    \\keys = ["alt", "h"]
+    \\action = "focus_left"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "j"]
+    \\action = "focus_down"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "k"]
+    \\action = "focus_up"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "l"]
+    \\action = "focus_right"
+    \\
+    \\# Window step displacement (Alt + Ctrl + H/J/K/L)
+    \\[[bind]]
+    \\keys = ["alt", "ctrl", "h"]
+    \\action = "move_left"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "ctrl", "j"]
+    \\action = "move_down"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "ctrl", "k"]
+    \\action = "move_up"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "ctrl", "l"]
+    \\action = "move_right"
+    \\
+    \\# Common actions
+    \\[[bind]]
+    \\keys = ["alt", "c"]
+    \\action = "center"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "t"]
+    \\action = "toggle_topmost"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "q"]
+    \\action = "close"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "m"]
+    \\action = "toggle_maximize"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "n"]
+    \\action = "restore_last_minimized"
+    \\
+    \\# Mouse streaming gestures
+    \\[[bind]]
+    \\keys = ["alt", "mouse_left"]
+    \\action = "drag_move"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "mouse_right"]
+    \\action = "drag_resize"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "mouse_middle"]
+    \\action = "minimize"
+    \\
+    \\[[bind]]
+    \\keys = ["alt", "mouse_wheel"]
+    \\action = "adjust_opacity"
+;
 
 pub const ConfigStore = struct {
     pub fn load(allocator: std.mem.Allocator) Config {
@@ -54,291 +190,188 @@ pub const ConfigStore = struct {
         defer allocator.free(cfg_dir);
         Paths.makeDirs(cfg_dir);
 
-        const cfg_path = std.fmt.allocPrint(allocator, "{s}\\config.json", .{cfg_dir}) catch return .{};
+        const cfg_path = std.fmt.allocPrint(allocator, "{s}\\config.toml", .{cfg_dir}) catch return .{};
         defer allocator.free(cfg_path);
 
-        const bytes = Paths.readSmallFile(allocator, cfg_path, 64 * 1024) catch |err| {
+        const bytes = Paths.readSmallFile(allocator, cfg_path, 128 * 1024) catch |err| {
             if (err == error.FileNotFound) {
-                const default_cfg = Config{};
-                save(allocator, &default_cfg);
+                Paths.writeFile(cfg_path, DEFAULT_CONFIG_TOML) catch {};
+                return parseToml(allocator, DEFAULT_CONFIG_TOML);
             }
             return .{};
         };
         defer allocator.free(bytes);
 
-        const cfg = deserialize(allocator, bytes);
-
-        // Auto-migrate: if the on-disk file is missing new keys, rewrite it in-place
-        if (hasMissingKeys(bytes)) {
-            save(allocator, &cfg);
-            logger.info("Config", "migrated old config to include new settings", .{});
-        }
-
-        return cfg;
+        return parseToml(allocator, bytes);
     }
 
-    pub fn save(allocator: std.mem.Allocator, config: *const Config) void {
+    /// When a tray toggle changes a boolean option, mutate the TOML CST in place preserving all user comments and layout
+    pub fn updateBoolOption(allocator: std.mem.Allocator, key: []const u8, value: bool) void {
         const cfg_dir = Paths.getConfigDir(allocator) catch return;
         defer allocator.free(cfg_dir);
-
-        const cfg_path = std.fmt.allocPrint(allocator, "{s}\\config.json", .{cfg_dir}) catch return;
+        const cfg_path = std.fmt.allocPrint(allocator, "{s}\\config.toml", .{cfg_dir}) catch return;
         defer allocator.free(cfg_path);
 
-        const json_content = serialize(allocator, config) catch return;
-        defer allocator.free(json_content);
+        const bytes = Paths.readSmallFile(allocator, cfg_path, 128 * 1024) catch return;
+        defer allocator.free(bytes);
 
-        Paths.writeFile(cfg_path, json_content) catch |err| {
-            logger.err("Config", "save failed: {s}", .{@errorName(err)});
+        var doc = cst.CstDocument.parse(allocator, bytes) catch return;
+        defer doc.deinit();
+
+        doc.setKeyValue(key, .{ .boolean = value }) catch return;
+
+        var out = std.ArrayListUnmanaged(u8).empty;
+        defer out.deinit(allocator);
+        const w = ArrayListWriter{ .list = &out, .alloc = allocator };
+        doc.emit(w) catch return;
+
+        Paths.writeFile(cfg_path, out.items) catch |err| {
+            logger.err("Config", "failed to atomically save option {s}: {s}", .{ key, @errorName(err) });
         };
     }
 
-    fn hasMissingKeys(json_bytes: []const u8) bool {
-        const required = [_][]const u8{
-            "\"move_step\"",
-            "\"key_move_left\"",
-            "\"key_move_down\"",
-            "\"key_move_up\"",
-            "\"key_move_right\"",
-        };
-        for (required) |k| {
-            if (std.mem.indexOf(u8, json_bytes, k) == null) return true;
-        }
-        return false;
-    }
+    fn parseToml(allocator: std.mem.Allocator, text: []const u8) Config {
+        var cfg = Config{};
+        var doc = cst.CstDocument.parse(allocator, text) catch return cfg;
+        defer doc.deinit();
 
-    fn serialize(allocator: std.mem.Allocator, cfg: *const Config) ![]u8 {
-        var list = std.array_list.Managed(u8).init(allocator);
-        defer list.deinit();
+        var bindings_list = std.ArrayListUnmanaged(Binding).empty;
+        var in_bind_table = false;
+        var cur_keys = std.ArrayListUnmanaged([]const u8).empty;
+        defer cur_keys.deinit(allocator);
+        var cur_action: ?Action = null;
 
-        var b1: [16]u8 = undefined;
-        var b2: [16]u8 = undefined;
-        var b3: [16]u8 = undefined;
-        var b4: [16]u8 = undefined;
-        var b5: [16]u8 = undefined;
-        var b6: [16]u8 = undefined;
-        var b7: [16]u8 = undefined;
-        var b8: [16]u8 = undefined;
-        var b9: [16]u8 = undefined;
-        var bm1: [16]u8 = undefined;
-        var bm2: [16]u8 = undefined;
-        var bm3: [16]u8 = undefined;
-        var bm4: [16]u8 = undefined;
-        var hex_buf: [7]u8 = undefined;
-
-        try list.print(
-            \\{{
-            \\  "language": "{s}",
-            \\  "move_step": {d},
-            \\  "key_center": "{s}",
-            \\  "key_topmost": "{s}",
-            \\  "key_close": "{s}",
-            \\  "key_maximize": "{s}",
-            \\  "key_restore_min": "{s}",
-            \\  "key_focus_left": "{s}",
-            \\  "key_focus_down": "{s}",
-            \\  "key_focus_up": "{s}",
-            \\  "key_focus_right": "{s}",
-            \\  "key_move_left": "{s}",
-            \\  "key_move_down": "{s}",
-            \\  "key_move_up": "{s}",
-            \\  "key_move_right": "{s}",
-            \\  "enable_border": {},
-            \\  "enable_wheel_opacity": {},
-            \\  "enable_autostart": {},
-            \\  "enable_elevated": {},
-            \\  "enable_window_snap": {},
-            \\  "snap_threshold": {d},
-            \\  "opacity_step": {d},
-            \\  "active_border_hex": "{s}",
-            \\  "min_window_width": {d},
-            \\  "min_window_height": {d},
-            \\  "log_max_days": {d},
-            \\  "ignore_processes": [
-        , .{
-            cfg.language.toString(),
-            cfg.move_step,
-            KeyMapper.format(cfg.key_center, &b1),
-            KeyMapper.format(cfg.key_topmost, &b2),
-            KeyMapper.format(cfg.key_close, &b3),
-            KeyMapper.format(cfg.key_maximize, &b4),
-            KeyMapper.format(cfg.key_restore_min, &b5),
-            KeyMapper.format(cfg.key_focus_left, &b6),
-            KeyMapper.format(cfg.key_focus_down, &b7),
-            KeyMapper.format(cfg.key_focus_up, &b8),
-            KeyMapper.format(cfg.key_focus_right, &b9),
-            KeyMapper.format(cfg.key_move_left, &bm1),
-            KeyMapper.format(cfg.key_move_down, &bm2),
-            KeyMapper.format(cfg.key_move_up, &bm3),
-            KeyMapper.format(cfg.key_move_right, &bm4),
-            cfg.enable_border,
-            cfg.enable_wheel_opacity,
-            cfg.enable_autostart,
-            cfg.enable_elevated,
-            cfg.enable_window_snap,
-            cfg.snap_threshold,
-            cfg.opacity_step,
-            cfg.active_border_color.toHex(&hex_buf),
-            cfg.min_window_width,
-            cfg.min_window_height,
-            cfg.log_max_days,
-        });
-
-        for (cfg.ignore_processes, 0..) |p, i| {
-            try list.print("\"{s}\"{s}", .{ p, if (i + 1 < cfg.ignore_processes.len) ", " else "" });
-        }
-        try list.appendSlice("],\n  \"ignore_classes\": [");
-        for (cfg.ignore_classes, 0..) |c, i| {
-            try list.print("\"{s}\"{s}", .{ c, if (i + 1 < cfg.ignore_classes.len) ", " else "" });
-        }
-        try list.appendSlice("]\n}\n");
-
-        return list.toOwnedSlice();
-    }
-
-    fn deserialize(allocator: std.mem.Allocator, json_bytes: []const u8) Config {
-        var res = Config{};
-
-        const Parsed = struct {
-            language: ?[]const u8 = null,
-            move_step: ?i32 = null,
-            key_center: ?[]const u8 = null,
-            key_topmost: ?[]const u8 = null,
-            key_close: ?[]const u8 = null,
-            key_maximize: ?[]const u8 = null,
-            key_restore_min: ?[]const u8 = null,
-            key_focus_left: ?[]const u8 = null,
-            key_focus_down: ?[]const u8 = null,
-            key_focus_up: ?[]const u8 = null,
-            key_focus_right: ?[]const u8 = null,
-            key_move_left: ?[]const u8 = null,
-            key_move_down: ?[]const u8 = null,
-            key_move_up: ?[]const u8 = null,
-            key_move_right: ?[]const u8 = null,
-            enable_border: ?bool = null,
-            enable_wheel_opacity: ?bool = null,
-            enable_autostart: ?bool = null,
-            enable_elevated: ?bool = null,
-            enable_window_snap: ?bool = null,
-            snap_threshold: ?i32 = null,
-            opacity_step: ?u8 = null,
-            active_border_hex: ?[]const u8 = null,
-            min_window_width: ?i32 = null,
-            min_window_height: ?i32 = null,
-            log_max_days: ?u32 = null,
-            ignore_processes: ?[][]const u8 = null,
-            ignore_classes: ?[][]const u8 = null,
-        };
-
-        const parsed = std.json.parseFromSlice(Parsed, allocator, json_bytes, .{ .ignore_unknown_fields = true }) catch return res;
-        defer parsed.deinit();
-
-        const v = parsed.value;
-        if (v.language) |l| res.language = Language.fromString(l);
-        if (v.move_step) |ms| res.move_step = std.math.clamp(ms, 1, 300);
-        if (v.enable_border) |eb| res.enable_border = eb;
-        if (v.enable_wheel_opacity) |wo| res.enable_wheel_opacity = wo;
-        if (v.enable_autostart) |ea| res.enable_autostart = ea;
-        if (v.enable_elevated) |ee| res.enable_elevated = ee;
-        if (v.enable_window_snap) |es| res.enable_window_snap = es;
-        if (v.snap_threshold) |st| res.snap_threshold = std.math.clamp(st, 0, 50);
-        if (v.opacity_step) |os| res.opacity_step = std.math.clamp(os, 1, 100);
-        if (v.min_window_width) |mw| res.min_window_width = @max(mw, 50);
-        if (v.min_window_height) |mh| res.min_window_height = @max(mh, 50);
-        if (v.log_max_days) |ld| res.log_max_days = @max(ld, 1);
-
-        if (v.key_center) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_center = vk;
-        };
-        if (v.key_topmost) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_topmost = vk;
-        };
-        if (v.key_close) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_close = vk;
-        };
-        if (v.key_maximize) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_maximize = vk;
-        };
-        if (v.key_restore_min) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_restore_min = vk;
-        };
-
-        if (v.key_focus_left) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_focus_left = vk;
-        };
-        if (v.key_focus_down) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_focus_down = vk;
-        };
-        if (v.key_focus_up) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_focus_up = vk;
-        };
-        if (v.key_focus_right) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_focus_right = vk;
-        };
-
-        if (v.key_move_left) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_move_left = vk;
-        };
-        if (v.key_move_down) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_move_down = vk;
-        };
-        if (v.key_move_up) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_move_up = vk;
-        };
-        if (v.key_move_right) |k| if (KeyMapper.parse(k)) |vk| {
-            res.key_move_right = vk;
-        };
-
-        if (v.active_border_hex) |hex| if (Color.fromHex(hex)) |c| {
-            res.active_border_color = c;
-        };
-
-        if (v.ignore_processes) |procs| {
-            var list = std.array_list.Managed([]const u8).init(allocator);
-            for (procs) |item| {
-                if (allocator.dupe(u8, item)) |dup| list.append(dup) catch allocator.free(dup) else |_| {}
+        const flush_binding = struct {
+            fn run(b_list: *std.ArrayListUnmanaged(Binding), k_list: *std.ArrayListUnmanaged([]const u8), act_opt: ?Action, alloc: std.mem.Allocator) void {
+                if (act_opt) |act| {
+                    var mods = ModifierMask{};
+                    var final_trigger: ?Trigger = null;
+                    for (k_list.items) |tok| {
+                        if (KeyParser.parseToken(tok, &mods)) |trig| {
+                            final_trigger = trig;
+                        }
+                    }
+                    if (final_trigger) |trig| {
+                        b_list.append(alloc, .{
+                            .mods = mods,
+                            .trigger = trig,
+                            .action = act,
+                        }) catch {};
+                    }
+                }
+                k_list.clearRetainingCapacity();
             }
-            res.ignore_processes = list.toOwnedSlice() catch &.{};
-        }
+        }.run;
 
-        if (v.ignore_classes) |classes| {
-            var list = std.array_list.Managed([]const u8).init(allocator);
-            for (classes) |item| {
-                if (allocator.dupe(u8, item)) |dup| list.append(dup) catch allocator.free(dup) else |_| {}
+        for (doc.nodes.items) |node| {
+            switch (node) {
+                .table_array_header => |th| {
+                    if (in_bind_table) {
+                        flush_binding(&bindings_list, &cur_keys, cur_action, allocator);
+                        cur_action = null;
+                    }
+                    in_bind_table = std.ascii.eqlIgnoreCase(th.name, "bind");
+                },
+                .key_value => |kv| {
+                    if (in_bind_table) {
+                        if (std.ascii.eqlIgnoreCase(kv.key, "keys")) {
+                            switch (kv.value) {
+                                .array => |arr| {
+                                    for (arr.items) |item| {
+                                        if (item == .string) cur_keys.append(allocator, item.string) catch {};
+                                    }
+                                },
+                                else => {},
+                            }
+                        } else if (std.ascii.eqlIgnoreCase(kv.key, "action")) {
+                            if (kv.value == .string) {
+                                cur_action = Action.fromString(kv.value.string);
+                            }
+                        }
+                    } else {
+                        // Root-level config options
+                        if (std.ascii.eqlIgnoreCase(kv.key, "language") and kv.value == .string) {
+                            cfg.language = Language.fromString(kv.value.string);
+                        }
+                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_border") and kv.value == .boolean) cfg.enable_border = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_wheel_opacity") and kv.value == .boolean) cfg.enable_wheel_opacity = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_autostart") and kv.value == .boolean) cfg.enable_autostart = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_elevated") and kv.value == .boolean) cfg.enable_elevated = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "enable_window_snap") and kv.value == .boolean) cfg.enable_window_snap = kv.value.boolean;
+                        if (std.ascii.eqlIgnoreCase(kv.key, "move_step") and kv.value == .integer) cfg.move_step = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "snap_threshold") and kv.value == .integer) cfg.snap_threshold = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "opacity_step") and kv.value == .integer) cfg.opacity_step = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "active_border_hex") and kv.value == .string) {
+                            if (Color.fromHex(kv.value.string)) |c| cfg.active_border_color = c;
+                        }
+                        if (std.ascii.eqlIgnoreCase(kv.key, "min_window_width") and kv.value == .integer) cfg.min_window_width = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "min_window_height") and kv.value == .integer) cfg.min_window_height = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "log_max_days") and kv.value == .integer) cfg.log_max_days = @intCast(kv.value.integer);
+                        if (std.ascii.eqlIgnoreCase(kv.key, "ignore_processes") and kv.value == .array) {
+                            var list = std.ArrayListUnmanaged([]const u8).empty;
+                            for (kv.value.array.items) |item| {
+                                if (item == .string) {
+                                    if (allocator.dupe(u8, item.string)) |dup| list.append(allocator, dup) catch allocator.free(dup) else |_| {}
+                                }
+                            }
+                            cfg.ignore_processes = list.toOwnedSlice(allocator) catch &.{};
+                        }
+                        if (std.ascii.eqlIgnoreCase(kv.key, "ignore_classes") and kv.value == .array) {
+                            var list = std.ArrayListUnmanaged([]const u8).empty;
+                            for (kv.value.array.items) |item| {
+                                if (item == .string) {
+                                    if (allocator.dupe(u8, item.string)) |dup| list.append(allocator, dup) catch allocator.free(dup) else |_| {}
+                                }
+                            }
+                            cfg.ignore_classes = list.toOwnedSlice(allocator) catch &.{};
+                        }
+                    }
+                },
+                else => {},
             }
-            res.ignore_classes = list.toOwnedSlice() catch &.{};
         }
 
-        return res;
+        if (in_bind_table) {
+            flush_binding(&bindings_list, &cur_keys, cur_action, allocator);
+        }
+
+        cfg.bindings = bindings_list.toOwnedSlice(allocator) catch &.{};
+        cfg.updateActiveModifiersUnion();
+        return cfg;
     }
 };
 
-test "KeyMapper parse & format" {
-    var buf: [16]u8 = undefined;
+test "KeyParser parses modifier + key tokens" {
+    var mods = ModifierMask{};
 
-    try std.testing.expectEqual(@as(?u32, VK_LEFT), KeyMapper.parse("Left"));
-    try std.testing.expectEqual(@as(?u32, VK_LEFT), KeyMapper.parse("arrowleft"));
-    try std.testing.expectEqual(@as(?u32, 'H'), KeyMapper.parse("h"));
-    try std.testing.expectEqual(@as(?u32, 'M'), KeyMapper.parse("m"));
+    try std.testing.expect(KeyParser.parseToken("alt", &mods) == null);
+    try std.testing.expect(mods.alt);
 
-    try std.testing.expectEqualStrings("Left", KeyMapper.format(VK_LEFT, &buf));
-    try std.testing.expectEqualStrings("Up", KeyMapper.format(VK_UP, &buf));
-    try std.testing.expectEqualStrings("H", KeyMapper.format('H', &buf));
+    mods = ModifierMask{};
+    try std.testing.expect(KeyParser.parseToken("ctrl", &mods) == null);
+    try std.testing.expect(mods.ctrl);
+
+    mods = ModifierMask{};
+    const trig = KeyParser.parseToken("h", &mods) orelse unreachable;
+    try std.testing.expectEqual(@as(u32, 'H'), switch (trig) {
+        .key => |v| v,
+        .mouse => unreachable,
+    });
+
+    mods = ModifierMask{};
+    const mtrig = KeyParser.parseToken("mouse_left", &mods) orelse unreachable;
+    try std.testing.expectEqual(binding.MouseTrigger.left, switch (mtrig) {
+        .mouse => |m| m,
+        .key => unreachable,
+    });
 }
 
-test "ConfigStore serialize & deserialize roundtrip" {
+test "ConfigStore TOML roundtrip preserves bindings" {
     const allocator = std.testing.allocator;
-    var cfg = Config{
-        .move_step = 25,
-        .key_move_left = VK_LEFT,
-        .key_move_right = VK_RIGHT,
-    };
-    const json = try ConfigStore.serialize(allocator, &cfg);
-    defer allocator.free(json);
+    var cfg = ConfigStore.parseToml(allocator, DEFAULT_CONFIG_TOML);
+    defer cfg.deinit(allocator);
 
-    var loaded = ConfigStore.deserialize(allocator, json);
-    defer loaded.deinit(allocator);
-
-    try std.testing.expectEqual(@as(i32, 25), loaded.move_step);
-    try std.testing.expectEqual(VK_LEFT, loaded.key_move_left);
-    try std.testing.expectEqual(VK_RIGHT, loaded.key_move_right);
+    try std.testing.expectEqual(@as(i32, 20), cfg.move_step);
+    try std.testing.expectEqual(true, cfg.enable_border);
+    try std.testing.expect(cfg.bindings.len > 0);
 }

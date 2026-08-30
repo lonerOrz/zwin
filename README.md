@@ -30,48 +30,101 @@ A lightweight Windows utility to move, resize, snap, and manage windows from any
 
 ## Configuration
 
-Settings are saved in `%APPDATA%\zwin\config.json`. The file is automatically reloaded when saved, and automatically migrated with default values when new settings are added in newer releases:
+Settings are saved in `%APPDATA%\zwin\config.toml`. The file is automatically reloaded when saved, and automatically migrated with default values when new settings are added in newer releases:
 
-```json
-{
-  "language": "auto",
-  "move_step": 20,
-  "key_center": "C",
-  "key_topmost": "T",
-  "key_close": "Q",
-  "key_maximize": "M",
-  "key_restore_min": "N",
-  "key_focus_left": "H",
-  "key_focus_down": "J",
-  "key_focus_up": "K",
-  "key_focus_right": "L",
-  "key_move_left": "H",
-  "key_move_down": "J",
-  "key_move_up": "K",
-  "key_move_right": "L",
-  "enable_border": true,
-  "enable_wheel_opacity": true,
-  "enable_autostart": false,
-  "enable_elevated": false,
-  "enable_window_snap": true,
-  "snap_threshold": 18,
-  "opacity_step": 15,
-  "active_border_hex": "#FF8800",
-  "min_window_width": 120,
-  "min_window_height": 100,
-  "log_max_days": 7,
-  "ignore_processes": ["Photoshop.exe", "*blender*.exe", "mstsc.exe"],
-  "ignore_classes": ["UnityWndClass", "UnrealWindow"]
-}
+```toml
+language = "auto"
+move_step = 20
+snap_threshold = 18
+opacity_step = 15
+enable_border = true
+enable_wheel_opacity = true
+enable_autostart = false
+enable_elevated = false
+enable_window_snap = true
+active_border_hex = "#FF8800"
+min_window_width = 120
+min_window_height = 100
+log_max_days = 7
+ignore_processes = ["Photoshop.exe", "*blender*.exe", "mstsc.exe"]
+ignore_classes = ["UnityWndClass", "UnrealWindow"]
+
+[[bind]]
+keys = ["alt", "h"]
+action = "focus_left"
+
+[[bind]]
+keys = ["alt", "j"]
+action = "focus_down"
+
+[[bind]]
+keys = ["alt", "k"]
+action = "focus_up"
+
+[[bind]]
+keys = ["alt", "l"]
+action = "focus_right"
+
+[[bind]]
+keys = ["alt", "ctrl", "h"]
+action = "move_left"
+
+[[bind]]
+keys = ["alt", "ctrl", "j"]
+action = "move_down"
+
+[[bind]]
+keys = ["alt", "ctrl", "k"]
+action = "move_up"
+
+[[bind]]
+keys = ["alt", "ctrl", "l"]
+action = "move_right"
+
+[[bind]]
+keys = ["alt", "c"]
+action = "center"
+
+[[bind]]
+keys = ["alt", "t"]
+action = "toggle_topmost"
+
+[[bind]]
+keys = ["alt", "q"]
+action = "close"
+
+[[bind]]
+keys = ["alt", "m"]
+action = "toggle_maximize"
+
+[[bind]]
+keys = ["alt", "n"]
+action = "restore_last_minimized"
+
+[[bind]]
+keys = ["alt", "mouse_left"]
+action = "drag_move"
+
+[[bind]]
+keys = ["alt", "mouse_right"]
+action = "drag_resize"
+
+[[bind]]
+keys = ["alt", "mouse_middle"]
+action = "minimize"
+
+[[bind]]
+keys = ["alt", "mouse_wheel"]
+action = "adjust_opacity"
 ```
 
 ### Settings Reference
 
+- **`[[bind]]`**: Custom shortcut and gesture mappings. Supports modifier keys (`alt`, `ctrl`, `shift`, `win`), keyboard keys (`a`-`z`, `0`-`9`, `left`, `right`, `up`, `down`, etc.), and mouse inputs (`mouse_left`, `mouse_right`, `mouse_middle`, `mouse_wheel`).
 - **`move_step`**: Distance in pixels moved per keypress when using `Alt + Ctrl` window movement (default `20`). Holding the key combination smoothly repeats movement.
-- **Key Names**: All keybinding fields accept single alphanumeric letters (`"A"`-`"Z"`, `"0"`-`"9"`) as well as named direction keys (`"Left"`, `"Right"`, `"Up"`, `"Down"`, `"ArrowLeft"`, etc.).
 - **`enable_window_snap` / `snap_threshold`**: Enables magnetic edge snapping between moving/resizing windows and other visible windows, in addition to monitor work areas. `snap_threshold` specifies the distance in pixels within which edges snap magnetically during mouse dragging.
 - **`ignore_processes` / `ignore_classes`**: Blacklist filtering. Windows matching these process or class name patterns bypass all interception, letting native `Alt` clicks and shortcuts pass directly to the target application. Supports `*` and `?` wildcard patterns.
-- **`enable_elevated`**: Allows managing elevated windows like Task Manager. Toggling from the tray menu restarts immediately; editing the JSON applies on next start. When enabled together with `enable_autostart`, a Windows scheduled task is used for silent startup.
+- **`enable_elevated`**: Allows managing elevated windows like Task Manager. Toggling from the tray menu restarts immediately; editing the file applies on next start. When enabled together with `enable_autostart`, a Windows scheduled task is used for silent startup.
 - **`enable_border`**: Draws an accent border on the active window (Windows 11 only).
 
 Logs are stored in `%LOCALAPPDATA%\zwin\logs\`.

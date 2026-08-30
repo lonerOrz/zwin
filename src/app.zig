@@ -611,12 +611,14 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                     if (t.GetForegroundWindow()) |current_fg| {
                         app.border_mgr.onFocusChange(current_fg);
                     }
-                    app.saveConfig();
+                    ConfigStore.updateBoolOption(app.allocator, "enable_border", app.config.enable_border);
+                    app.last_config_write_ms = t.GetTickCount64();
                 },
                 CMD_TOGGLE_AUTOSTART => {
                     app.config.enable_autostart = !app.config.enable_autostart;
                     app.syncAutostartState();
-                    app.saveConfig();
+                    ConfigStore.updateBoolOption(app.allocator, "enable_autostart", app.config.enable_autostart);
+                    app.last_config_write_ms = t.GetTickCount64();
                 },
                 CMD_RELOAD_CONFIG => app.reloadConfig(),
                 CMD_OPEN_CONFIG_DIR => openDirInExplorer(app, .config),
@@ -629,13 +631,14 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                     if (!want_elevated and app.isAdmin()) app.deleteElevationTask();
 
                     app.syncAutostartState();
-                    app.saveConfig();
+                    ConfigStore.updateBoolOption(app.allocator, "enable_elevated", want_elevated);
+                    app.last_config_write_ms = t.GetTickCount64();
 
                     const launched = if (want_elevated) app.relaunchAsAdmin() else app.relaunchUnelevated();
                     if (!launched) {
                         app.config.enable_elevated = !want_elevated;
                         app.syncAutostartState();
-                        app.saveConfig();
+                        ConfigStore.updateBoolOption(app.allocator, "enable_elevated", !want_elevated);
                         logger.info("App", "elevation preference rolled back to match current token", .{});
                     }
                 },
