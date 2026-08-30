@@ -245,6 +245,7 @@ pub const WM_SIZING: u32 = 0x0214;
 pub const WM_ENTERSIZEMOVE: u32 = 0x0231;
 pub const WM_EXITSIZEMOVE: u32 = 0x0232;
 pub const WM_PAINT: u32 = 0x000F;
+pub const WM_NCCREATE: u32 = 0x0081;
 
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
@@ -268,8 +269,13 @@ pub const WM_APP_INTENT: u32 = WM_USER + 3;
 
 // Virtual key codes
 pub const VK_CONTROL: u16 = 0x11;
+pub const VK_CONTROL_I32: i32 = 0x11;
 pub const VK_MENU: u32 = 0x12;
 pub const VK_MENU_I32: i32 = 0x12;
+pub const VK_SHIFT: u16 = 0x10;
+pub const VK_SHIFT_I32: i32 = 0x10;
+pub const VK_LWIN: i32 = 0x5B;
+pub const VK_RWIN: i32 = 0x5C;
 pub const VK_LMENU: u32 = 0xA4;
 pub const VK_RMENU: u32 = 0xA5;
 pub const VK_ESCAPE: u32 = 0x1B;
@@ -277,6 +283,9 @@ pub const VK_ESCAPE: u32 = 0x1B;
 // Window styles
 pub const GWL_STYLE: i32 = -16;
 pub const GWL_EXSTYLE: i32 = -20;
+pub const GWLP_STYLE: i32 = -16;
+pub const GWLP_EXSTYLE: i32 = -20;
+pub const GWLP_USERDATA: i32 = -21;
 pub const WS_CHILD: isize = 0x40000000;
 pub const WS_CAPTION: isize = 0x00C00000;
 pub const WS_POPUP: isize = 0x80000000;
@@ -284,7 +293,7 @@ pub const WS_EX_TOPMOST: isize = 0x00000008;
 pub const WS_EX_TOOLWINDOW: isize = 0x00000080;
 pub const WS_EX_APPWINDOW: isize = 0x00040000;
 pub const WS_EX_LAYERED: isize = 0x00080000;
-pub const WS_EX_TRANSPARENT: isize = 0x0020000;
+pub const WS_EX_TRANSPARENT: isize = 0x00000020;
 pub const WS_EX_NOACTIVATE: isize = 0x08000000;
 pub const LWA_ALPHA: u32 = 0x00000002;
 pub const LWA_COLORKEY: u32 = 0x00000001;
@@ -382,7 +391,9 @@ pub const SM_CXDRAG: i32 = 68;
 pub const ZWIN_INJECTED_TAG: usize = 0x5A57494E;
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub const HIGH_PRIORITY_CLASS: u32 = 0x00000080;
+pub const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x00008000;
 pub const THREAD_PRIORITY_HIGHEST: i32 = 2;
+pub const THREAD_PRIORITY_ABOVE_NORMAL: i32 = 1;
 pub const SMTO_ABORTIFHUNG: u32 = 0x0002;
 pub const MSGFLT_ALLOW: u32 = 1;
 pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
@@ -539,6 +550,7 @@ pub const IDC_SIZENS: usize = 32645;
 // Win32 API functions: dwmapi.dll
 pub extern "dwmapi" fn DwmGetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
 pub extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
+pub extern "dwmapi" fn DwmFlush() callconv(.winapi) c_int;
 // Win32 API functions: user32.dll — DPI awareness
 pub extern "user32" fn SetProcessDpiAwarenessContext(value: isize) callconv(.winapi) BOOL;
 
@@ -572,6 +584,22 @@ pub extern "gdi32" fn DeleteObject(ho: *anyopaque) callconv(.winapi) BOOL;
 pub extern "gdi32" fn RoundRect(hdc: HDC, left: i32, top: i32, right: i32, bottom: i32, width: i32, height: i32) callconv(.winapi) BOOL;
 pub extern "gdi32" fn SetBkMode(hdc: HDC, mode: i32) callconv(.winapi) i32;
 pub extern "gdi32" fn SetTextColor(hdc: HDC, color: u32) callconv(.winapi) u32;
+
+// CREATESTRUCTW passed as lParam in WM_NCCREATE
+pub const CREATESTRUCTW = extern struct {
+    lpCreateParams: ?*anyopaque,
+    hInstance: HINSTANCE,
+    hMenu: HMENU,
+    hwndParent: HWND,
+    cy: i32,
+    cx: i32,
+    y: i32,
+    x: i32,
+    style: i32,
+    lpszName: [*:0]const u16,
+    lpszClass: [*:0]const u16,
+    dwExStyle: u32,
+};
 
 // Win32 API functions: user32.dll — painting
 pub extern "user32" fn BeginPaint(hWnd: HWND, lpPaint: *PAINTSTRUCT) callconv(.winapi) ?HDC;

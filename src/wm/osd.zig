@@ -2,6 +2,7 @@ const std = @import("std");
 const t = @import("../platform/win32.zig");
 const geom = @import("../calc/geometry.zig");
 const Language = @import("../infra/i18n.zig").Language;
+const I18n = @import("../infra/i18n.zig").I18n;
 
 const OSD_WIDTH: i32 = 260;
 const OSD_HEIGHT: i32 = 48;
@@ -15,6 +16,7 @@ pub const OsdKind = enum {
     resize,
     opacity,
     topmost,
+    passthrough,
 };
 
 pub const OsdManager = struct {
@@ -26,8 +28,9 @@ pub const OsdManager = struct {
     kind: OsdKind = .none,
     bg_brush: ?t.HBRUSH = null,
 
-    pub fn init(hinst: ?t.HINSTANCE) OsdManager {
-        var self = OsdManager{};
+    // In-place init: `self` is a stable pointer owned by App, stored in GWLP_USERDATA
+    pub fn init(self: *OsdManager, hinst: ?t.HINSTANCE) void {
+        self.* = .{};
         self.createWindow(hinst);
 
         // High-contrast clean font
@@ -49,17 +52,22 @@ pub const OsdManager = struct {
         );
 
         self.bg_brush = t.CreateSolidBrush(TRANSPARENT_KEY);
-        return self;
     }
 
     pub fn deinit(self: *OsdManager) void {
         if (self.hwnd) |hwnd| {
             _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);
             _ = t.DestroyWindow(hwnd);
+            self.hwnd = null;
         }
-        if (self.font) |f| _ = t.DeleteObject(f);
-        if (self.bg_brush) |b| _ = t.DeleteObject(b);
-        self.* = undefined;
+        if (self.font) |f| {
+            _ = t.DeleteObject(f);
+            self.font = null;
+        }
+        if (self.bg_brush) |b| {
+            _ = t.DeleteObject(b);
+            self.bg_brush = null;
+        }
     }
 
     fn createWindow(self: *OsdManager, hinst: ?t.HINSTANCE) void {
@@ -71,7 +79,6 @@ pub const OsdManager = struct {
         };
         _ = t.RegisterClassExW(&wnd_class);
 
-        // Do not use WS_EX_TRANSPARENT to avoid DWM skipping paint with color keying
         self.hwnd = t.CreateWindowExW(
             t.WS_EX_TOPMOST | t.WS_EX_TOOLWINDOW | t.WS_EX_LAYERED | t.WS_EX_NOACTIVATE,
             class_name,
@@ -84,7 +91,7 @@ pub const OsdManager = struct {
             null,
             null,
             hinst,
-            null,
+            @ptrCast(self),
         );
 
         if (self.hwnd) |hwnd| {
@@ -103,28 +110,28 @@ pub const OsdManager = struct {
 
     pub fn showOpacity(self: *OsdManager, cursor: geom.Point, alpha: u8, lang: Language) void {
         const percent = @divTrunc(@as(u32, alpha) * 100, 255);
-        var buf_u8: [64]u8 = undefined;
-        const label = if (lang == .zh_CN)
-            std.fmt.bufPrint(&buf_u8, "透明度: {d}%", .{percent}) catch return
-        else
-            std.fmt.bufPrint(&buf_u8, "Opacity: {d}%", .{percent}) catch return;
-
-        self.setText(label);
+        var buf: [64]u8 = undefined;
+        const formatted = I18n.formatOpacity(lang, &buf, percent) orelse return;
+        self.setText(formatted);
         self.kind = .opacity;
         self.repositionAndShow(cursor.x + 20, cursor.y + 20, 1500);
     }
 
     pub fn showTopmost(self: *OsdManager, is_topmost: bool, lang: Language) void {
+        const strings = I18n.getStrings(lang);
+        self.setWideText(if (is_topmost) strings.osd_topmost_on else strings.osd_topmost_off);
+        self.kind = .topmost;
         var cursor: t.POINT = undefined;
         _ = t.GetCursorPos(&cursor);
+        self.repositionAndShow(cursor.x + 20, cursor.y + 20, 1500);
+    }
 
-        const text = if (lang == .zh_CN)
-            (if (is_topmost) "置顶: 开启" else "置顶: 关闭")
-        else
-            (if (is_topmost) "Topmost: ON" else "Topmost: OFF");
-
-        self.setText(text);
-        self.kind = .topmost;
+    pub fn showPassthrough(self: *OsdManager, is_passthrough: bool, lang: Language) void {
+        const strings = I18n.getStrings(lang);
+        self.setWideText(if (is_passthrough) strings.osd_passthrough_on else strings.osd_passthrough_off);
+        self.kind = .passthrough;
+        var cursor: t.POINT = undefined;
+        _ = t.GetCursorPos(&cursor);
         self.repositionAndShow(cursor.x + 20, cursor.y + 20, 1500);
     }
 
@@ -143,6 +150,15 @@ pub const OsdManager = struct {
         self.text_len = len;
     }
 
+    fn setWideText(self: *OsdManager, text_w: [*:0]const u16) void {
+        var len: usize = 0;
+        while (len < self.text_buf.len - 1 and text_w[len] != 0) : (len += 1) {
+            self.text_buf[len] = text_w[len];
+        }
+        self.text_buf[len] = 0;
+        self.text_len = len;
+    }
+
     fn repositionAndShow(self: *OsdManager, x: i32, y: i32, auto_hide_ms: u32) void {
         const hwnd = self.hwnd orelse return;
 
@@ -154,9 +170,9 @@ pub const OsdManager = struct {
             y,
             OSD_WIDTH,
             OSD_HEIGHT,
-            t.SWP_NOACTIVATE | t.SWP_SHOWWINDOW | t.SWP_FRAMECHANGED,
+            t.SWP_NOACTIVATE | t.SWP_SHOWWINDOW | t.SWP_NOSIZE | t.SWP_NOZORDER,
         );
-        _ = t.InvalidateRect(hwnd, null, 1);
+        _ = t.InvalidateRect(hwnd, null, 0);
         self.visible = true;
 
         _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);
@@ -167,20 +183,29 @@ pub const OsdManager = struct {
 };
 
 fn osdWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winapi) t.LRESULT {
+    if (msg == t.WM_NCCREATE) {
+        const cs: *const t.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(lParam)));
+        if (cs.lpCreateParams) |ptr| {
+            _ = t.SetWindowLongPtrW(hwnd, t.GWLP_USERDATA, @as(isize, @bitCast(@intFromPtr(ptr))));
+        }
+    }
+
+    const osd_ptr = t.GetWindowLongPtrW(hwnd, t.GWLP_USERDATA);
+    if (osd_ptr == 0) return t.DefWindowProcW(hwnd, msg, wParam, lParam);
+    const osd: *OsdManager = @ptrFromInt(@as(usize, @bitCast(osd_ptr)));
+
     switch (msg) {
         t.WM_TIMER => {
             if (wParam == TIMER_OSD_AUTOHIDE) {
                 _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);
                 _ = t.ShowWindow(hwnd, 0);
+                osd.visible = false;
             }
         },
         t.WM_PAINT => {
             var ps: t.PAINTSTRUCT = undefined;
             const hdc = t.BeginPaint(hwnd, &ps) orelse return 0;
             defer _ = t.EndPaint(hwnd, &ps);
-
-            const app_ptr = @import("../app.zig").App.global;
-            const osd = if (app_ptr) |a| &a.osd else return 0;
 
             // Fill entire rect with color key brush (borderless transparent cutout)
             if (osd.bg_brush) |brush| {

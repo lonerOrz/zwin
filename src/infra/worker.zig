@@ -1,6 +1,7 @@
 const std = @import("std");
 const t = @import("../platform/win32.zig");
-const WindowTarget = @import("../domain/window_target.zig").WindowTarget;
+const types = @import("../domain/types.zig");
+const WindowTarget = types.WindowTarget;
 const logger = @import("logger.zig");
 
 pub const StreamingOp = union(enum) {
@@ -93,7 +94,7 @@ pub const WindowWorker = struct {
 
     fn workerLoop(self: *WindowWorker) void {
         // Boost worker thread priority for responsive window positioning
-        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
+        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_ABOVE_NORMAL);
         while (true) {
             t.AcquireSRWLockExclusive(&self.lock);
             while (self.fifo_len == 0 and self.streaming_slot == null and self.running) {
@@ -163,7 +164,7 @@ pub const WindowWorker = struct {
                     m.y,
                     0,
                     0,
-                    t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER | t.SWP_NOSENDCHANGING | t.SWP_DEFERERASE,
+                    t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE,
                 );
             },
             .resize => |r| {
@@ -174,7 +175,7 @@ pub const WindowWorker = struct {
                     r.y,
                     r.w,
                     r.h,
-                    t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER | t.SWP_NOSENDCHANGING | t.SWP_DEFERERASE,
+                    t.SWP_NOZORDER | t.SWP_NOACTIVATE,
                 );
             },
         }

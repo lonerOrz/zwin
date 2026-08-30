@@ -32,6 +32,7 @@ pub const Language = enum {
 };
 
 pub const Strings = struct {
+    // Tray & menu
     tray_running: [*:0]const u16,
     tray_paused: [*:0]const u16,
     menu_pause: [*:0]const u16,
@@ -44,6 +45,12 @@ pub const Strings = struct {
     menu_open_config: [*:0]const u16,
     menu_open_log: [*:0]const u16,
     menu_exit: [*:0]const u16,
+
+    // OSD hints
+    osd_topmost_on: [*:0]const u16,
+    osd_topmost_off: [*:0]const u16,
+    osd_passthrough_on: [*:0]const u16,
+    osd_passthrough_off: [*:0]const u16,
 };
 
 const STRINGS_EN = blk: {
@@ -61,6 +68,11 @@ const STRINGS_EN = blk: {
         .menu_open_config = std.unicode.utf8ToUtf16LeStringLiteral("Open Config Folder..."),
         .menu_open_log = std.unicode.utf8ToUtf16LeStringLiteral("Open Log Folder..."),
         .menu_exit = std.unicode.utf8ToUtf16LeStringLiteral("Exit zwin"),
+
+        .osd_topmost_on = std.unicode.utf8ToUtf16LeStringLiteral("Topmost: ON"),
+        .osd_topmost_off = std.unicode.utf8ToUtf16LeStringLiteral("Topmost: OFF"),
+        .osd_passthrough_on = std.unicode.utf8ToUtf16LeStringLiteral("Pass-through: ON"),
+        .osd_passthrough_off = std.unicode.utf8ToUtf16LeStringLiteral("Pass-through: OFF"),
     };
 };
 
@@ -79,6 +91,11 @@ const STRINGS_ZH = blk: {
         .menu_open_config = std.unicode.utf8ToUtf16LeStringLiteral("打开配置目录..."),
         .menu_open_log = std.unicode.utf8ToUtf16LeStringLiteral("打开日志目录..."),
         .menu_exit = std.unicode.utf8ToUtf16LeStringLiteral("退出 zwin"),
+
+        .osd_topmost_on = std.unicode.utf8ToUtf16LeStringLiteral("置顶: 开启"),
+        .osd_topmost_off = std.unicode.utf8ToUtf16LeStringLiteral("置顶: 关闭"),
+        .osd_passthrough_on = std.unicode.utf8ToUtf16LeStringLiteral("鼠标穿透: 开启"),
+        .osd_passthrough_off = std.unicode.utf8ToUtf16LeStringLiteral("鼠标穿透: 关闭"),
     };
 };
 
@@ -95,6 +112,13 @@ pub const I18n = struct {
         return switch (resolveLanguage(lang)) {
             .zh_CN => STRINGS_ZH,
             else => STRINGS_EN,
+        };
+    }
+
+    pub fn formatOpacity(lang: Language, buf: []u8, percent: u32) ?[]const u8 {
+        return switch (resolveLanguage(lang)) {
+            .zh_CN => std.fmt.bufPrint(buf, "透明度: {d}%", .{percent}) catch null,
+            else => std.fmt.bufPrint(buf, "Opacity: {d}%", .{percent}) catch null,
         };
     }
 };

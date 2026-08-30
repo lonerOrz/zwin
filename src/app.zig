@@ -4,8 +4,9 @@ const geom = @import("calc/geometry.zig");
 const Paths = @import("platform/paths.zig").Paths;
 const Window = @import("platform/window.zig").Window;
 const Config = @import("domain/config.zig").Config;
-const UserIntent = @import("domain/intent.zig").UserIntent;
-const WindowTarget = @import("domain/window_target.zig").WindowTarget;
+const types = @import("domain/types.zig");
+const UserIntent = types.UserIntent;
+const WindowTarget = types.WindowTarget;
 const logger = @import("infra/logger.zig");
 const Logger = logger.Logger;
 const WindowWorker = @import("infra/worker.zig").WindowWorker;
@@ -15,6 +16,7 @@ const BorderManager = @import("wm/border.zig").BorderManager;
 const OsdManager = @import("wm/osd.zig").OsdManager;
 const GestureStateMachine = @import("input/gesture.zig").GestureStateMachine;
 const InputEngine = @import("input/engine.zig").InputEngine;
+const IntentHandler = @import("wm/intent_handler.zig").IntentHandler;
 const Autostart = @import("platform/autostart.zig").Autostart;
 const I18n = @import("infra/i18n.zig").I18n;
 const resources = @import("platform/resources.zig");
@@ -47,16 +49,13 @@ pub const App = struct {
     gesture: GestureStateMachine,
     hook_engine: InputEngine,
     watcher: ConfigWatcher = .{},
+    intent_handler: IntentHandler = undefined,
 
     // RAII platform resources
     msg_win: ?resources.MessageWindow = null,
     tray: ?resources.TrayIcon = null,
     win_hooks: ?resources.WinEventHooks = null,
     mutex: resources.SingleInstanceMutex = .{},
-
-    // Minimized-window LRU stack for Alt+N restore
-    minimized_stack: [16]t.HWND = undefined,
-    minimized_count: usize = 0,
 
     last_config_write_ms: u64 = 0,
     quitting: bool = false,
@@ -65,52 +64,6 @@ pub const App = struct {
 
     pub var global: ?*App = null;
 
-    pub fn recordMinimized(self: *App, hwnd: t.HWND) void {
-        if (@intFromPtr(hwnd) == 0) return;
-        // Evict existing entry if already present
-        var i: usize = 0;
-        while (i < self.minimized_count) {
-            if (self.minimized_stack[i] == hwnd) {
-                std.mem.copyForwards(t.HWND, self.minimized_stack[i..], self.minimized_stack[i + 1 ..]);
-                self.minimized_count -= 1;
-                break;
-            }
-            i += 1;
-        }
-        // If stack full, evict oldest (bottom) element
-        if (self.minimized_count >= self.minimized_stack.len) {
-            std.mem.copyForwards(t.HWND, self.minimized_stack[0..], self.minimized_stack[1..]);
-            self.minimized_count -= 1;
-        }
-        self.minimized_stack[self.minimized_count] = hwnd;
-        self.minimized_count += 1;
-    }
-
-    pub fn removeMinimized(self: *App, hwnd: t.HWND) void {
-        var i: usize = 0;
-        while (i < self.minimized_count) {
-            if (self.minimized_stack[i] == hwnd) {
-                if (i + 1 < self.minimized_count) {
-                    std.mem.copyForwards(t.HWND, self.minimized_stack[i..], self.minimized_stack[i + 1 ..]);
-                }
-                self.minimized_count -= 1;
-                return;
-            }
-            i += 1;
-        }
-    }
-
-    pub fn popLastMinimized(self: *App) ?t.HWND {
-        while (self.minimized_count > 0) {
-            self.minimized_count -= 1;
-            const candidate = self.minimized_stack[self.minimized_count];
-            if (t.IsWindow(candidate) != 0 and Window.init(candidate).isMinimized()) {
-                return candidate;
-            }
-        }
-        return null;
-    }
-
     pub fn init(allocator: std.mem.Allocator, config: Config) !*App {
         const self = try allocator.create(App);
         errdefer allocator.destroy(self);
@@ -118,7 +71,7 @@ pub const App = struct {
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .logger_inst = Logger.init(allocator, config.log_max_days),
+            .logger_inst = Logger.init(allocator, config.log_retention_days),
             .worker = .{},
             .border_mgr = undefined,
             .gesture = undefined,
@@ -128,8 +81,15 @@ pub const App = struct {
         logger.info("App", "zwin starting...", .{});
 
         self.border_mgr = BorderManager.init(&self.config);
-        self.gesture = GestureStateMachine.init(&self.worker, &self.config);
-        self.hook_engine = InputEngine.init(&self.gesture, &self.config);
+        self.gesture = GestureStateMachine.init(&self.worker, &self.config, &self.osd);
+        self.intent_handler = IntentHandler.init(
+            &self.worker,
+            &self.border_mgr,
+            &self.osd,
+            &self.gesture,
+            &self.config,
+        );
+        self.hook_engine = InputEngine.init(&self.gesture, &self.config, &self.intent_handler);
 
         App.global = self;
         return self;
@@ -137,12 +97,12 @@ pub const App = struct {
 
     pub fn start(self: *App, hinst: ?t.HINSTANCE) !void {
         // Boost scheduling priority to avoid LowLevelHooksTimeout under load
-        _ = t.SetPriorityClass(t.GetCurrentProcess(), t.HIGH_PRIORITY_CLASS);
-        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_HIGHEST);
+        _ = t.SetPriorityClass(t.GetCurrentProcess(), t.ABOVE_NORMAL_PRIORITY_CLASS);
+        _ = t.SetThreadPriority(t.GetCurrentThread(), t.THREAD_PRIORITY_ABOVE_NORMAL);
 
         _ = self.worker.invalidateSession();
 
-        self.osd = OsdManager.init(hinst);
+        self.osd.init(hinst);
 
         self.msg_win = try resources.MessageWindow.create(hinst, appWndProc);
         const hwnd = self.msg_win.?.hwnd;
@@ -335,13 +295,13 @@ pub const App = struct {
 
     // Ensure registry Run key and scheduled task are mutually exclusive
     pub fn syncAutostartState(self: *App) void {
-        if (!self.config.enable_autostart) {
+        if (!self.config.autostart) {
             Autostart.setEnabled(false);
             if (self.isAdmin()) self.deleteElevationTask();
             return;
         }
 
-        if (self.config.enable_elevated and self.isAdmin()) {
+        if (self.config.run_as_admin and self.isAdmin()) {
             Autostart.setEnabled(false);
             self.ensureElevationTask();
         } else {
@@ -355,12 +315,12 @@ pub const App = struct {
         if (self.quitting) return;
         logger.info("App", "reloading config from disk", .{});
 
-        const prev_autostart = self.config.enable_autostart;
-        const prev_elevated = self.config.enable_elevated;
+        const prev_autostart = self.config.autostart;
+        const prev_run_as_admin = self.config.run_as_admin;
         self.config.deinit(self.allocator);
         self.config = ConfigStore.load(self.allocator);
 
-        if (self.config.enable_autostart != prev_autostart or self.config.enable_elevated != prev_elevated) {
+        if (self.config.autostart != prev_autostart or self.config.run_as_admin != prev_run_as_admin) {
             self.syncAutostartState();
         }
 
@@ -384,103 +344,21 @@ pub const App = struct {
         }
     }
 
-    // Dispatch user intents on the main thread
-    pub fn handleIntent(self: *App, intent: UserIntent) void {
-        switch (intent) {
-            .center_active_window => {
-                const target = self.resolveActiveTarget() orelse return;
-                const win = Window.init(target.hwnd);
-                win.ensureRestored();
-                if (win.getMonitorWorkArea()) |wa| {
-                    const bounds = win.getPhysicalBounds();
-                    const pad = win.getShadowPadding();
-                    const centered = geom.calculateCenterRect(wa, bounds, pad);
-                    self.worker.postDiscrete(target, .{ .set_bounds = .{
-                        .x = centered.left,
-                        .y = centered.top,
-                        .w = centered.width(),
-                        .h = centered.height(),
-                    } });
-                }
-            },
-            .toggle_active_topmost => {
-                const target = self.resolveActiveTarget() orelse return;
-                const ex_style = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
-                const is_topmost = (ex_style & t.WS_EX_TOPMOST) != 0;
-                const will_topmost = !is_topmost;
-                _ = t.SetWindowPos(
-                    target.hwnd,
-                    if (will_topmost) t.HWND_TOPMOST else t.HWND_NOTOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOACTIVATE,
-                );
-                self.osd.showTopmost(will_topmost, self.config.language);
-            },
-            .toggle_active_maximize => {
-                const target = self.resolveActiveTarget() orelse return;
-                Window.init(target.hwnd).toggleMaximize();
-            },
-            .restore_last_minimized => {
-                if (self.popLastMinimized()) |hwnd| {
-                    Window.focusWindow(hwnd);
-                }
-            },
-            .focus_direction => |dir| {
-                const current = t.GetForegroundWindow() orelse return;
-                if (Window.findDirectionalTarget(current, dir, &self.config)) |target| {
-                    Window.focusWindow(target);
-                }
-            },
-            .close_active_window => {
-                const target = self.resolveActiveTarget() orelse return;
-                Window.init(target.hwnd).close();
-            },
-            .abort_gesture => {
-                self.gesture.abort();
-            },
-            .minimize_at => |m| {
-                const target = self.resolveTargetAtPoint(m.pt) orelse return;
-                Window.init(target.hwnd).minimize();
-            },
-            .adjust_opacity_at => |op| {
-                const target = self.resolveTargetAtPoint(op.pt) orelse self.resolveActiveTarget() orelse return;
-                const win = Window.init(target.hwnd);
-                win.adjustOpacity(op.delta);
+    // Dispatch WinEvent-generated intents through the main thread
+    fn enqueueIntentFromWinEvent(self: *App, intent: UserIntent) void {
+        self.handleIntent(intent);
+    }
 
-                // Read back current alpha for OSD feedback
-                var alpha: u8 = 255;
-                var flags: u32 = 0;
-                const ex = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
-                if ((ex & t.WS_EX_LAYERED) != 0) {
-                    if (t.GetLayeredWindowAttributes(target.hwnd, null, &alpha, &flags) == 0 or (flags & t.LWA_ALPHA) == 0) {
-                        alpha = 255;
-                    }
-                }
-                self.osd.showOpacity(op.pt, alpha, self.config.language);
-            },
+    pub fn handleIntent(self: *App, intent: UserIntent) void {
+        self.intent_handler.dispatch(intent);
+        switch (intent) {
+            .foreground_changed => self.scheduleBorderReinforce(),
+            .window_closed_or_hidden => self.refreshActiveBorder(),
+            else => {},
         }
     }
 
-    fn resolveActiveTarget(self: *App) ?WindowTarget {
-        const raw_fg = t.GetForegroundWindow() orelse return null;
-        const top = Window.getTrueTopLevel(raw_fg) orelse return null;
-        const win = Window.init(top);
-        if (win.isExclusiveFullScreen() or win.isIgnored(&self.config)) return null;
-        return .{ .hwnd = top, .session_id = self.worker.fetchSessionId() };
-    }
-
-    fn resolveTargetAtPoint(self: *App, pt: geom.Point) ?WindowTarget {
-        const raw_hwnd = t.WindowFromPoint(.{ .x = pt.x, .y = pt.y }) orelse return null;
-        const top = Window.getTrueTopLevel(raw_hwnd) orelse return null;
-        const win = Window.init(top);
-        if (win.isExclusiveFullScreen() or win.isIgnored(&self.config)) return null;
-        return .{ .hwnd = top, .session_id = self.worker.fetchSessionId() };
-    }
-
-    fn refreshActiveBorder(self: *App) void {
+    pub fn refreshActiveBorder(self: *App) void {
         if (t.GetForegroundWindow()) |fg| {
             self.border_mgr.onFocusChange(fg);
             self.scheduleBorderReinforce();
@@ -502,21 +380,26 @@ fn winEventCallback(_: t.HWINEVENTHOOK, event: u32, hwnd: t.HWND, idObject: i32,
     switch (event) {
         t.EVENT_SYSTEM_FOREGROUND => {
             const target = if (@intFromPtr(hwnd) != 0) hwnd else (t.GetForegroundWindow() orelse return);
-            app.border_mgr.onFocusChange(target);
-            app.scheduleBorderReinforce();
+            app.enqueueIntentFromWinEvent(.{ .foreground_changed = target });
         },
-        t.EVENT_OBJECT_SHOW, t.EVENT_SYSTEM_MINIMIZEEND => app.refreshActiveBorder(),
+        t.EVENT_OBJECT_SHOW => app.refreshActiveBorder(),
+        t.EVENT_SYSTEM_MINIMIZEEND => {
+            app.intent_handler.removeMinimized(hwnd);
+            app.refreshActiveBorder();
+        },
         t.EVENT_SYSTEM_MINIMIZESTART => {
             if (Window.getTrueTopLevel(hwnd)) |_| {
-                app.recordMinimized(hwnd);
+                app.intent_handler.recordMinimized(hwnd);
             }
             app.border_mgr.onWindowClosedOrHidden(hwnd);
             app.refreshActiveBorder();
         },
-        t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE => {
-            app.removeMinimized(hwnd);
-            app.border_mgr.onWindowClosedOrHidden(hwnd);
-            app.refreshActiveBorder();
+        t.EVENT_OBJECT_DESTROY => {
+            app.intent_handler.removeMinimized(hwnd);
+            app.enqueueIntentFromWinEvent(.{ .window_closed_or_hidden = hwnd });
+        },
+        t.EVENT_OBJECT_HIDE => {
+            app.enqueueIntentFromWinEvent(.{ .window_closed_or_hidden = hwnd });
         },
         else => {},
     }
@@ -549,8 +432,8 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                 const strings = I18n.getStrings(app.config.language);
 
                 const pause_flags = t.MF_STRING | (if (app.hook_engine.paused.load(.acquire)) t.MF_CHECKED else t.MF_UNCHECKED);
-                const border_flags = t.MF_STRING | (if (app.config.enable_border) t.MF_CHECKED else t.MF_UNCHECKED);
-                const autostart_flags = t.MF_STRING | (if (app.config.enable_autostart) t.MF_CHECKED else t.MF_UNCHECKED);
+                const border_flags = t.MF_STRING | (if (app.config.border) t.MF_CHECKED else t.MF_UNCHECKED);
+                const autostart_flags = t.MF_STRING | (if (app.config.autostart) t.MF_CHECKED else t.MF_UNCHECKED);
                 const admin_flags = t.MF_STRING | (if (app.isAdmin()) t.MF_CHECKED else t.MF_UNCHECKED);
                 const admin_label = if (app.isAdmin()) strings.menu_normal else strings.menu_admin;
 
@@ -577,35 +460,38 @@ fn appWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callco
                     app.setPaused(!app.hook_engine.paused.load(.acquire));
                 },
                 CMD_TOGGLE_BORDER => {
-                    app.config.enable_border = !app.config.enable_border;
+                    app.config.border = !app.config.border;
                     if (t.GetForegroundWindow()) |current_fg| {
                         app.border_mgr.onFocusChange(current_fg);
                     }
-                    app.saveConfig();
+                    ConfigStore.updateBoolOption(app.allocator, "border", app.config.border);
+                    app.last_config_write_ms = t.GetTickCount64();
                 },
                 CMD_TOGGLE_AUTOSTART => {
-                    app.config.enable_autostart = !app.config.enable_autostart;
+                    app.config.autostart = !app.config.autostart;
                     app.syncAutostartState();
-                    app.saveConfig();
+                    ConfigStore.updateBoolOption(app.allocator, "autostart", app.config.autostart);
+                    app.last_config_write_ms = t.GetTickCount64();
                 },
                 CMD_RELOAD_CONFIG => app.reloadConfig(),
                 CMD_OPEN_CONFIG_DIR => openDirInExplorer(app, .config),
                 CMD_OPEN_LOG_DIR => openDirInExplorer(app, .log),
                 CMD_RESTART => app.restart(),
                 CMD_TOGGLE_ADMIN => {
-                    const want_elevated = !app.isAdmin();
-                    app.config.enable_elevated = want_elevated;
+                    const want_admin = !app.isAdmin();
+                    app.config.run_as_admin = want_admin;
 
-                    if (!want_elevated and app.isAdmin()) app.deleteElevationTask();
+                    if (!want_admin and app.isAdmin()) app.deleteElevationTask();
 
                     app.syncAutostartState();
-                    app.saveConfig();
+                    ConfigStore.updateBoolOption(app.allocator, "run_as_admin", want_admin);
+                    app.last_config_write_ms = t.GetTickCount64();
 
-                    const launched = if (want_elevated) app.relaunchAsAdmin() else app.relaunchUnelevated();
+                    const launched = if (want_admin) app.relaunchAsAdmin() else app.relaunchUnelevated();
                     if (!launched) {
-                        app.config.enable_elevated = !want_elevated;
+                        app.config.run_as_admin = !want_admin;
                         app.syncAutostartState();
-                        app.saveConfig();
+                        ConfigStore.updateBoolOption(app.allocator, "run_as_admin", !want_admin);
                         logger.info("App", "elevation preference rolled back to match current token", .{});
                     }
                 },

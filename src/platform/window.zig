@@ -301,6 +301,35 @@ pub const Window = struct {
         }
     }
 
+    // Toggle mouse click passthrough (WS_EX_LAYERED + WS_EX_TRANSPARENT)
+    pub fn togglePassthrough(self: Window) bool {
+        const ex_style = t.GetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE);
+        const will_passthrough = (ex_style & t.WS_EX_TRANSPARENT) == 0;
+
+        var new_ex = ex_style;
+        if (will_passthrough) {
+            new_ex |= (t.WS_EX_LAYERED | t.WS_EX_TRANSPARENT);
+            _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, new_ex);
+            // Layered attribute must be set after WS_EX_LAYERED is in place
+            if ((ex_style & t.WS_EX_LAYERED) == 0) {
+                _ = t.SetLayeredWindowAttributes(self.hwnd, 0, 255, t.LWA_ALPHA);
+            }
+        } else {
+            new_ex &= ~t.WS_EX_TRANSPARENT;
+            _ = t.SetWindowLongPtrW(self.hwnd, t.GWL_EXSTYLE, new_ex);
+        }
+        _ = t.SetWindowPos(
+            self.hwnd,
+            null,
+            0,
+            0,
+            0,
+            0,
+            t.SWP_NOMOVE | t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_FRAMECHANGED,
+        );
+        return will_passthrough;
+    }
+
     pub fn close(self: Window) void {
         _ = t.PostMessageW(self.hwnd, t.WM_CLOSE, 0, 0);
     }
@@ -325,5 +354,12 @@ pub const Window = struct {
         if (t.IsZoomed(self.hwnd) != 0) {
             _ = t.ShowWindow(self.hwnd, t.SW_RESTORE);
         }
+    }
+
+    /// Scales a logical pixel dimension according to the window's monitor DPI.
+    pub fn scaleDpi(self: Window, value: i32) i32 {
+        const dpi = t.GetDpiForWindow(self.hwnd);
+        if (dpi == 0 or dpi == 96) return value;
+        return @divTrunc(value * @as(i32, @intCast(dpi)) + 48, 96);
     }
 };
