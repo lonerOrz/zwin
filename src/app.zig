@@ -398,11 +398,15 @@ pub const App = struct {
 
                 const bounds = win.getPhysicalBounds();
                 const pad = win.getShadowPadding();
-                const vec = dir.toVector(self.config.move_step);
-                const moved = geom.offsetRect(bounds, vec);
+                const step = win.scaleDpi(self.config.move_step);
+                const vec = dir.toVector(step);
+                var moved = geom.offsetRect(bounds, vec);
 
-                // Pure translation: no snap — keyboard movement is pixel-perfect intent,
-                // bypassing magnetic snap to prevent edge-lock when step <= snap_threshold
+                // Clamp to work area so the window can never slide off-screen or behind the taskbar
+                if (win.getMonitorWorkArea()) |wa| {
+                    moved = geom.clampRectToWorkArea(moved, wa);
+                }
+
                 self.worker.postDiscrete(target, .{ .set_bounds = .{
                     .x = moved.left - pad.l,
                     .y = moved.top - pad.t,

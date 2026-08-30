@@ -200,9 +200,10 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
     }
 
     if (self.isAltDown() and is_down) {
-        const shift = isShiftDown();
+        const ctrl = isCtrlDown();
 
-        if (shift) {
+        if (ctrl) {
+            // Alt + Ctrl + Key → move window by move_step pixels
             if (kbd.vkCode == self.config.key_move_left) {
                 self.alt_state = .alt_held_consumed;
                 self.enqueueIntent(.{ .move_window_direction = .left });
@@ -221,6 +222,7 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
                 return 1;
             }
         } else {
+            // Alt + Key → directional focus switch
             if (kbd.vkCode == self.config.key_focus_left) {
                 self.alt_state = .alt_held_consumed;
                 self.enqueueIntent(.{ .focus_direction = .left });
@@ -381,8 +383,8 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     return t.CallNextHookEx(null, nCode, wParam, lParam);
 }
 
-fn isShiftDown() bool {
-    return (@as(u16, @bitCast(t.GetAsyncKeyState(t.VK_SHIFT))) & 0x8000) != 0;
+fn isCtrlDown() bool {
+    return (@as(u16, @bitCast(t.GetAsyncKeyState(t.VK_CONTROL_I32))) & 0x8000) != 0;
 }
 
 fn actionableWindowAt(pt: t.POINT, config: *const Config) ?Window {

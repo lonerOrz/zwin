@@ -11,7 +11,7 @@ A lightweight Windows utility to move, resize, snap, and manage windows from any
 | **`Alt` + Middle Click**             | Minimize window                                |
 | **`Alt` + Mouse Wheel**              | Change window opacity                          |
 | **`Alt` + Click** _(without moving)_ | Normal click passed through to underlying app  |
-| **`Alt + Shift + H / J / K / L`**    | Move window step-by-step (or Arrow Keys)       |
+| **`Alt + Ctrl + H / J / K / L`**     | Move window step-by-step (or Arrow Keys)       |
 | **`Alt + H / J / K / L`**            | Directional focus navigation (or Arrow Keys)   |
 | **`Alt + C`**                        | Center window on current monitor               |
 | **`Alt + T`**                        | Toggle always-on-top                           |
@@ -67,7 +67,7 @@ Settings are saved in `%APPDATA%\zwin\config.json`. The file is automatically re
 
 ### Settings Reference
 
-- **`move_step`**: Distance in pixels moved per keypress when using `Alt + Shift` window movement (default `20`). Holding the key combination smoothly repeats movement.
+- **`move_step`**: Distance in pixels moved per keypress when using `Alt + Ctrl` window movement (default `20`). Holding the key combination smoothly repeats movement.
 - **Key Names**: All keybinding fields accept single alphanumeric letters (`"A"`-`"Z"`, `"0"`-`"9"`) as well as named direction keys (`"Left"`, `"Right"`, `"Up"`, `"Down"`, `"ArrowLeft"`, etc.).
 - **`enable_window_snap` / `snap_threshold`**: Enables magnetic edge snapping between moving/resizing windows and other visible windows, in addition to monitor work areas. `snap_threshold` specifies the distance in pixels within which edges snap magnetically during mouse dragging.
 - **`ignore_processes` / `ignore_classes`**: Blacklist filtering. Windows matching these process or class name patterns bypass all interception, letting native `Alt` clicks and shortcuts pass directly to the target application. Supports `*` and `?` wildcard patterns.

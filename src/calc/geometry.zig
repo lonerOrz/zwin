@@ -391,6 +391,33 @@ pub fn snapResizeBoundsEx(
     return res;
 }
 
+/// Clamps a rectangle within the monitor's work area boundary.
+pub fn clampRectToWorkArea(rc: Rect, wa: Rect) Rect {
+    const w = rc.width();
+    const h = rc.height();
+    var left = rc.left;
+    var top = rc.top;
+
+    if (w <= wa.width()) {
+        left = std.math.clamp(left, wa.left, wa.right - w);
+    } else {
+        left = wa.left;
+    }
+
+    if (h <= wa.height()) {
+        top = std.math.clamp(top, wa.top, wa.bottom - h);
+    } else {
+        top = wa.top;
+    }
+
+    return .{
+        .left = left,
+        .top = top,
+        .right = left + w,
+        .bottom = top + h,
+    };
+}
+
 // Distance score for directional navigation: lower is better.
 // Returns null when the candidate is not in the requested direction.
 pub fn scoreDirectionalCandidate(current: Rect, candidate: Rect, dir: Direction) ?i64 {
@@ -564,6 +591,22 @@ pub fn matchGlob(pattern: []const u8, text: []const u8) bool {
     }
 
     return p_idx == pattern.len;
+}
+
+test "clampRectToWorkArea prevents going off-screen" {
+    const wa: Rect = .{ .left = 0, .top = 0, .right = 1920, .bottom = 1080 };
+
+    // Push past left edge
+    const out_left: Rect = .{ .left = -50, .top = 100, .right = 350, .bottom = 500 };
+    const clamped_l = clampRectToWorkArea(out_left, wa);
+    try std.testing.expectEqual(@as(i32, 0), clamped_l.left);
+    try std.testing.expectEqual(@as(i32, 400), clamped_l.width());
+
+    // Push past right edge
+    const out_right: Rect = .{ .left = 1800, .top = 100, .right = 2200, .bottom = 500 };
+    const clamped_r = clampRectToWorkArea(out_right, wa);
+    try std.testing.expectEqual(@as(i32, 1520), clamped_r.left);
+    try std.testing.expectEqual(@as(i32, 1920), clamped_r.right);
 }
 
 test "matchGlob pattern matching" {

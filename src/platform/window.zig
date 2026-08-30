@@ -326,4 +326,11 @@ pub const Window = struct {
             _ = t.ShowWindow(self.hwnd, t.SW_RESTORE);
         }
     }
+
+    /// Scales a logical pixel dimension according to the window's monitor DPI.
+    pub fn scaleDpi(self: Window, value: i32) i32 {
+        const dpi = t.GetDpiForWindow(self.hwnd);
+        if (dpi == 0 or dpi == 96) return value;
+        return @divTrunc(value * @as(i32, @intCast(dpi)) + 48, 96);
+    }
 };

@@ -269,6 +269,7 @@ pub const WM_APP_INTENT: u32 = WM_USER + 3;
 
 // Virtual key codes
 pub const VK_CONTROL: u16 = 0x11;
+pub const VK_CONTROL_I32: i32 = 0x11;
 pub const VK_MENU: u32 = 0x12;
 pub const VK_MENU_I32: i32 = 0x12;
 pub const VK_SHIFT: u16 = 0x10;
