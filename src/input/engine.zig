@@ -200,6 +200,46 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
     }
 
     if (self.isAltDown() and is_down) {
+        const shift = isShiftDown();
+
+        if (shift) {
+            if (kbd.vkCode == self.config.key_move_left) {
+                self.alt_state = .alt_held_consumed;
+                self.enqueueIntent(.{ .move_window_direction = .left });
+                return 1;
+            } else if (kbd.vkCode == self.config.key_move_down) {
+                self.alt_state = .alt_held_consumed;
+                self.enqueueIntent(.{ .move_window_direction = .down });
+                return 1;
+            } else if (kbd.vkCode == self.config.key_move_up) {
+                self.alt_state = .alt_held_consumed;
+                self.enqueueIntent(.{ .move_window_direction = .up });
+                return 1;
+            } else if (kbd.vkCode == self.config.key_move_right) {
+                self.alt_state = .alt_held_consumed;
+                self.enqueueIntent(.{ .move_window_direction = .right });
+                return 1;
+            }
+        } else {
+            if (kbd.vkCode == self.config.key_focus_left) {
+                self.alt_state = .alt_held_consumed;
+                self.enqueueIntent(.{ .focus_direction = .left });
+                return 1;
+            } else if (kbd.vkCode == self.config.key_focus_down) {
+                self.alt_state = .alt_held_consumed;
+                self.enqueueIntent(.{ .focus_direction = .down });
+                return 1;
+            } else if (kbd.vkCode == self.config.key_focus_up) {
+                self.alt_state = .alt_held_consumed;
+                self.enqueueIntent(.{ .focus_direction = .up });
+                return 1;
+            } else if (kbd.vkCode == self.config.key_focus_right) {
+                self.alt_state = .alt_held_consumed;
+                self.enqueueIntent(.{ .focus_direction = .right });
+                return 1;
+            }
+        }
+
         if (kbd.vkCode == self.config.key_center) {
             self.alt_state = .alt_held_consumed;
             self.enqueueIntent(.center_active_window);
@@ -219,22 +259,6 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
         } else if (kbd.vkCode == self.config.key_restore_min) {
             self.alt_state = .alt_held_consumed;
             self.enqueueIntent(.restore_last_minimized);
-            return 1;
-        } else if (kbd.vkCode == self.config.key_focus_left) {
-            self.alt_state = .alt_held_consumed;
-            self.enqueueIntent(.{ .focus_direction = .left });
-            return 1;
-        } else if (kbd.vkCode == self.config.key_focus_down) {
-            self.alt_state = .alt_held_consumed;
-            self.enqueueIntent(.{ .focus_direction = .down });
-            return 1;
-        } else if (kbd.vkCode == self.config.key_focus_up) {
-            self.alt_state = .alt_held_consumed;
-            self.enqueueIntent(.{ .focus_direction = .up });
-            return 1;
-        } else if (kbd.vkCode == self.config.key_focus_right) {
-            self.alt_state = .alt_held_consumed;
-            self.enqueueIntent(.{ .focus_direction = .right });
             return 1;
         }
     }
@@ -355,6 +379,10 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
     }
 
     return t.CallNextHookEx(null, nCode, wParam, lParam);
+}
+
+fn isShiftDown() bool {
+    return (@as(u16, @bitCast(t.GetAsyncKeyState(t.VK_SHIFT))) & 0x8000) != 0;
 }
 
 fn actionableWindowAt(pt: t.POINT, config: *const Config) ?Window {

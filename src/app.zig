@@ -142,7 +142,7 @@ pub const App = struct {
 
         _ = self.worker.invalidateSession();
 
-        self.osd = OsdManager.init(hinst);
+        self.osd.init(hinst);
 
         self.msg_win = try resources.MessageWindow.create(hinst, appWndProc);
         const hwnd = self.msg_win.?.hwnd;
@@ -384,9 +384,33 @@ pub const App = struct {
         }
     }
 
-    // Dispatch user intents on the main thread
+    // Dispatch WinEvent-generated intents through the main thread
+    fn enqueueIntentFromWinEvent(self: *App, intent: UserIntent) void {
+        self.handleIntent(intent);
+    }
+
     pub fn handleIntent(self: *App, intent: UserIntent) void {
         switch (intent) {
+            .move_window_direction => |dir| {
+                const target = self.resolveActiveTarget() orelse return;
+                const win = Window.init(target.hwnd);
+                win.ensureRestored();
+
+                const bounds = win.getPhysicalBounds();
+                const pad = win.getShadowPadding();
+                const vec = dir.toVector(self.config.move_step);
+                const moved = geom.offsetRect(bounds, vec);
+
+                // Pure translation: no snap — keyboard movement is pixel-perfect intent,
+                // bypassing magnetic snap to prevent edge-lock when step <= snap_threshold
+                self.worker.postDiscrete(target, .{ .set_bounds = .{
+                    .x = moved.left - pad.l,
+                    .y = moved.top - pad.t,
+                    .w = moved.width() + pad.l + pad.r,
+                    .h = moved.height() + pad.t + pad.b,
+                } });
+            },
+
             .center_active_window => {
                 const target = self.resolveActiveTarget() orelse return;
                 const win = Window.init(target.hwnd);
@@ -406,8 +430,7 @@ pub const App = struct {
             .toggle_active_topmost => {
                 const target = self.resolveActiveTarget() orelse return;
                 const ex_style = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
-                const is_topmost = (ex_style & t.WS_EX_TOPMOST) != 0;
-                const will_topmost = !is_topmost;
+                const will_topmost = (ex_style & t.WS_EX_TOPMOST) == 0;
                 _ = t.SetWindowPos(
                     target.hwnd,
                     if (will_topmost) t.HWND_TOPMOST else t.HWND_NOTOPMOST,
@@ -438,9 +461,7 @@ pub const App = struct {
                 const target = self.resolveActiveTarget() orelse return;
                 Window.init(target.hwnd).close();
             },
-            .abort_gesture => {
-                self.gesture.abort();
-            },
+            .abort_gesture => self.gesture.abort(),
             .minimize_at => |m| {
                 const target = self.resolveTargetAtPoint(m.pt) orelse return;
                 Window.init(target.hwnd).minimize();
@@ -450,7 +471,6 @@ pub const App = struct {
                 const win = Window.init(target.hwnd);
                 win.adjustOpacity(op.delta);
 
-                // Read back current alpha for OSD feedback
                 var alpha: u8 = 255;
                 var flags: u32 = 0;
                 const ex = t.GetWindowLongPtrW(target.hwnd, t.GWL_EXSTYLE);
@@ -460,6 +480,15 @@ pub const App = struct {
                     }
                 }
                 self.osd.showOpacity(op.pt, alpha, self.config.language);
+            },
+            .foreground_changed => |hwnd| {
+                self.border_mgr.onFocusChange(hwnd);
+                self.scheduleBorderReinforce();
+            },
+            .window_closed_or_hidden => |hwnd| {
+                self.removeMinimized(hwnd);
+                self.border_mgr.onWindowClosedOrHidden(hwnd);
+                self.refreshActiveBorder();
             },
         }
     }
@@ -502,21 +531,18 @@ fn winEventCallback(_: t.HWINEVENTHOOK, event: u32, hwnd: t.HWND, idObject: i32,
     switch (event) {
         t.EVENT_SYSTEM_FOREGROUND => {
             const target = if (@intFromPtr(hwnd) != 0) hwnd else (t.GetForegroundWindow() orelse return);
-            app.border_mgr.onFocusChange(target);
-            app.scheduleBorderReinforce();
+            app.enqueueIntentFromWinEvent(.{ .foreground_changed = target });
         },
         t.EVENT_OBJECT_SHOW, t.EVENT_SYSTEM_MINIMIZEEND => app.refreshActiveBorder(),
         t.EVENT_SYSTEM_MINIMIZESTART => {
             if (Window.getTrueTopLevel(hwnd)) |_| {
                 app.recordMinimized(hwnd);
             }
-            app.border_mgr.onWindowClosedOrHidden(hwnd);
-            app.refreshActiveBorder();
+            app.enqueueIntentFromWinEvent(.{ .window_closed_or_hidden = hwnd });
         },
         t.EVENT_OBJECT_DESTROY, t.EVENT_OBJECT_HIDE => {
             app.removeMinimized(hwnd);
-            app.border_mgr.onWindowClosedOrHidden(hwnd);
-            app.refreshActiveBorder();
+            app.enqueueIntentFromWinEvent(.{ .window_closed_or_hidden = hwnd });
         },
         else => {},
     }

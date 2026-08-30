@@ -4,20 +4,21 @@ A lightweight Windows utility to move, resize, snap, and manage windows from any
 
 ## Keybindings
 
-| Shortcut                             | Action                                            |
-| :----------------------------------- | :------------------------------------------------ |
-| **`Alt` + Left Click Drag**          | Move window (with magnetic screen/window snap)    |
-| **`Alt` + Right Click Drag**         | Resize window (from 9 screen sectors)             |
-| **`Alt` + Middle Click**             | Minimize window                                   |
-| **`Alt` + Mouse Wheel**              | Change window opacity                             |
-| **`Alt` + Click** _(without moving)_ | Normal click passed through to underlying app     |
-| **`Alt + C`**                        | Center window on current monitor                  |
-| **`Alt + T`**                        | Toggle always-on-top                              |
-| **`Alt + M`**                        | Toggle maximize / restore                         |
-| **`Alt + N`**                        | Restore most recently minimized window            |
-| **`Alt + H / J / K / L`**            | Directional focus navigation (Left/Down/Up/Right) |
-| **`Alt + Q`**                        | Close window                                      |
-| **`ESC`** _(while dragging)_         | Cancel movement and restore window position       |
+| Shortcut                             | Action                                         |
+| :----------------------------------- | :--------------------------------------------- |
+| **`Alt` + Left Click Drag**          | Move window (with magnetic screen/window snap) |
+| **`Alt` + Right Click Drag**         | Resize window (from 9 screen sectors)          |
+| **`Alt` + Middle Click**             | Minimize window                                |
+| **`Alt` + Mouse Wheel**              | Change window opacity                          |
+| **`Alt` + Click** _(without moving)_ | Normal click passed through to underlying app  |
+| **`Alt + Shift + H / J / K / L`**    | Move window step-by-step (or Arrow Keys)       |
+| **`Alt + H / J / K / L`**            | Directional focus navigation (or Arrow Keys)   |
+| **`Alt + C`**                        | Center window on current monitor               |
+| **`Alt + T`**                        | Toggle always-on-top                           |
+| **`Alt + M`**                        | Toggle maximize / restore                      |
+| **`Alt + N`**                        | Restore most recently minimized window         |
+| **`Alt + Q`**                        | Close window                                   |
+| **`ESC`** _(while dragging)_         | Cancel movement and restore window position    |
 
 ## Download & Usage
 
@@ -29,11 +30,12 @@ A lightweight Windows utility to move, resize, snap, and manage windows from any
 
 ## Configuration
 
-Settings are saved in `%APPDATA%\zwin\config.json`. The file is automatically reloaded when saved:
+Settings are saved in `%APPDATA%\zwin\config.json`. The file is automatically reloaded when saved, and automatically migrated with default values when new settings are added in newer releases:
 
 ```json
 {
   "language": "auto",
+  "move_step": 20,
   "key_center": "C",
   "key_topmost": "T",
   "key_close": "Q",
@@ -43,6 +45,10 @@ Settings are saved in `%APPDATA%\zwin\config.json`. The file is automatically re
   "key_focus_down": "J",
   "key_focus_up": "K",
   "key_focus_right": "L",
+  "key_move_left": "H",
+  "key_move_down": "J",
+  "key_move_up": "K",
+  "key_move_right": "L",
   "enable_border": true,
   "enable_wheel_opacity": true,
   "enable_autostart": false,
@@ -61,7 +67,9 @@ Settings are saved in `%APPDATA%\zwin\config.json`. The file is automatically re
 
 ### Settings Reference
 
-- **`enable_window_snap` / `snap_threshold`**: Enables magnetic edge snapping between moving/resizing windows and other visible windows, in addition to monitor work areas. `snap_threshold` specifies the distance in pixels within which edges snap magnetically.
+- **`move_step`**: Distance in pixels moved per keypress when using `Alt + Shift` window movement (default `20`). Holding the key combination smoothly repeats movement.
+- **Key Names**: All keybinding fields accept single alphanumeric letters (`"A"`-`"Z"`, `"0"`-`"9"`) as well as named direction keys (`"Left"`, `"Right"`, `"Up"`, `"Down"`, `"ArrowLeft"`, etc.).
+- **`enable_window_snap` / `snap_threshold`**: Enables magnetic edge snapping between moving/resizing windows and other visible windows, in addition to monitor work areas. `snap_threshold` specifies the distance in pixels within which edges snap magnetically during mouse dragging.
 - **`ignore_processes` / `ignore_classes`**: Blacklist filtering. Windows matching these process or class name patterns bypass all interception, letting native `Alt` clicks and shortcuts pass directly to the target application. Supports `*` and `?` wildcard patterns.
 - **`enable_elevated`**: Allows managing elevated windows like Task Manager. Toggling from the tray menu restarts immediately; editing the JSON applies on next start. When enabled together with `enable_autostart`, a Windows scheduled task is used for silent startup.
 - **`enable_border`**: Draws an accent border on the active window (Windows 11 only).

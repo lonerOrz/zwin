@@ -40,7 +40,27 @@ pub const Direction = enum {
     down,
     up,
     right,
+
+    /// Computes a displacement vector from direction and step size.
+    pub inline fn toVector(self: Direction, step: i32) Point {
+        return switch (self) {
+            .left => .{ .x = -step, .y = 0 },
+            .right => .{ .x = step, .y = 0 },
+            .up => .{ .x = 0, .y = -step },
+            .down => .{ .x = 0, .y = step },
+        };
+    }
 };
+
+/// Translates a rectangle by a point.
+pub inline fn offsetRect(rc: Rect, pt: Point) Rect {
+    return .{
+        .left = rc.left + pt.x,
+        .top = rc.top + pt.y,
+        .right = rc.right + pt.x,
+        .bottom = rc.bottom + pt.y,
+    };
+}
 
 pub const max_snap_targets: usize = 32;
 

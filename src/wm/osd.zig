@@ -26,8 +26,9 @@ pub const OsdManager = struct {
     kind: OsdKind = .none,
     bg_brush: ?t.HBRUSH = null,
 
-    pub fn init(hinst: ?t.HINSTANCE) OsdManager {
-        var self = OsdManager{};
+    // In-place init: `self` is a stable pointer owned by App, stored in GWLP_USERDATA
+    pub fn init(self: *OsdManager, hinst: ?t.HINSTANCE) void {
+        self.* = .{};
         self.createWindow(hinst);
 
         // High-contrast clean font
@@ -49,17 +50,22 @@ pub const OsdManager = struct {
         );
 
         self.bg_brush = t.CreateSolidBrush(TRANSPARENT_KEY);
-        return self;
     }
 
     pub fn deinit(self: *OsdManager) void {
         if (self.hwnd) |hwnd| {
             _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);
             _ = t.DestroyWindow(hwnd);
+            self.hwnd = null;
         }
-        if (self.font) |f| _ = t.DeleteObject(f);
-        if (self.bg_brush) |b| _ = t.DeleteObject(b);
-        self.* = undefined;
+        if (self.font) |f| {
+            _ = t.DeleteObject(f);
+            self.font = null;
+        }
+        if (self.bg_brush) |b| {
+            _ = t.DeleteObject(b);
+            self.bg_brush = null;
+        }
     }
 
     fn createWindow(self: *OsdManager, hinst: ?t.HINSTANCE) void {
@@ -71,7 +77,6 @@ pub const OsdManager = struct {
         };
         _ = t.RegisterClassExW(&wnd_class);
 
-        // Do not use WS_EX_TRANSPARENT to avoid DWM skipping paint with color keying
         self.hwnd = t.CreateWindowExW(
             t.WS_EX_TOPMOST | t.WS_EX_TOOLWINDOW | t.WS_EX_LAYERED | t.WS_EX_NOACTIVATE,
             class_name,
@@ -84,7 +89,7 @@ pub const OsdManager = struct {
             null,
             null,
             hinst,
-            null,
+            @ptrCast(self),
         );
 
         if (self.hwnd) |hwnd| {
@@ -167,20 +172,29 @@ pub const OsdManager = struct {
 };
 
 fn osdWndProc(hwnd: t.HWND, msg: u32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winapi) t.LRESULT {
+    if (msg == t.WM_NCCREATE) {
+        const cs: *const t.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(lParam)));
+        if (cs.lpCreateParams) |ptr| {
+            _ = t.SetWindowLongPtrW(hwnd, t.GWLP_USERDATA, @as(isize, @bitCast(@intFromPtr(ptr))));
+        }
+    }
+
+    const osd_ptr = t.GetWindowLongPtrW(hwnd, t.GWLP_USERDATA);
+    if (osd_ptr == 0) return t.DefWindowProcW(hwnd, msg, wParam, lParam);
+    const osd: *OsdManager = @ptrFromInt(@as(usize, @bitCast(osd_ptr)));
+
     switch (msg) {
         t.WM_TIMER => {
             if (wParam == TIMER_OSD_AUTOHIDE) {
                 _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);
                 _ = t.ShowWindow(hwnd, 0);
+                osd.visible = false;
             }
         },
         t.WM_PAINT => {
             var ps: t.PAINTSTRUCT = undefined;
             const hdc = t.BeginPaint(hwnd, &ps) orelse return 0;
             defer _ = t.EndPaint(hwnd, &ps);
-
-            const app_ptr = @import("../app.zig").App.global;
-            const osd = if (app_ptr) |a| &a.osd else return 0;
 
             // Fill entire rect with color key brush (borderless transparent cutout)
             if (osd.bg_brush) |brush| {
