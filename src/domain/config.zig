@@ -1,11 +1,11 @@
 const std = @import("std");
 const Language = @import("../infra/i18n.zig").Language;
-const Color = @import("color.zig").Color;
-const binding = @import("binding.zig");
-const Binding = binding.Binding;
-const ModifierMask = binding.ModifierMask;
-const Trigger = binding.Trigger;
-const Action = binding.Action;
+const types = @import("types.zig");
+const Color = types.Color;
+const Binding = types.Binding;
+const ModifierMask = types.ModifierMask;
+const MouseTrigger = types.MouseTrigger;
+const Action = types.Action;
 
 pub const Config = struct {
     language: Language = .auto,
@@ -27,8 +27,6 @@ pub const Config = struct {
     ignore_classes: []const []const u8 = &.{},
 
     bindings: []const Binding = &.{},
-
-    // Union of all modifiers used across every binding (for fast pruning)
     active_modifiers_union: ModifierMask = .{},
 
     pub fn updateActiveModifiersUnion(self: *Config) void {
@@ -39,7 +37,6 @@ pub const Config = struct {
         self.active_modifiers_union = @as(ModifierMask, @bitCast(raw_union));
     }
 
-    /// If the currently pressed modifiers share no bits with any configured rule, the low-level hook can let it through immediately
     pub inline fn hasMatchingModifierSubset(self: *const Config, current: ModifierMask) bool {
         const u = @as(u8, @bitCast(self.active_modifiers_union));
         const c = @as(u8, @bitCast(current));
@@ -58,7 +55,7 @@ pub const Config = struct {
         return null;
     }
 
-    pub fn matchMouseBinding(self: *const Config, current_mods: ModifierMask, trigger: binding.MouseTrigger) ?Action {
+    pub fn matchMouseBinding(self: *const Config, current_mods: ModifierMask, trigger: MouseTrigger) ?Action {
         for (self.bindings) |b| {
             if (b.mods.eql(current_mods)) {
                 switch (b.trigger) {

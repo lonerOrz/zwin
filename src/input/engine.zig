@@ -1,14 +1,16 @@
 const std = @import("std");
 const t = @import("../platform/win32.zig");
 const geom = @import("../calc/geometry.zig");
-const UserIntent = @import("../domain/intent.zig").UserIntent;
-const WindowTarget = @import("../domain/window_target.zig").WindowTarget;
+const types = @import("../domain/types.zig");
+const UserIntent = types.UserIntent;
+const WindowTarget = types.WindowTarget;
+const Action = types.Action;
+const MouseTrigger = types.MouseTrigger;
+const ModifierMask = types.ModifierMask;
 const Window = @import("../platform/window.zig").Window;
 const logger = @import("../infra/logger.zig");
 const GestureStateMachine = @import("gesture.zig").GestureStateMachine;
 const Config = @import("../domain/config.zig").Config;
-const binding = @import("../domain/binding.zig");
-const ModifierMask = binding.ModifierMask;
 
 const intent_cap: usize = 16;
 const intent_mask: usize = intent_cap - 1;
@@ -20,13 +22,12 @@ pub const InputEngine = struct {
     config: *const Config,
     paused: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
-    // Track whether we consumed an Alt/Win hotkey to neutralize the system menu on release
     consumed_alt: bool = false,
     consumed_win: bool = false,
     consumed_mbutton: bool = false,
 
     pending_mouse_action: ?struct {
-        action: binding.Action,
+        action: Action,
         pt: geom.Point,
         win: Window,
     } = null,
@@ -34,7 +35,6 @@ pub const InputEngine = struct {
     notify_hwnd: t.HWND = undefined,
     hinst: ?t.HINSTANCE = null,
 
-    // Watchdog timestamp updated on every mouse move
     last_hook_mouse_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
@@ -72,7 +72,6 @@ pub const InputEngine = struct {
         InputEngine.global = null;
     }
 
-    /// Reinstall low-level hooks on watchdog recovery
     pub fn reinstall(self: *InputEngine) void {
         self.uninstall();
         self.install(self.hinst, self.notify_hwnd) catch {
@@ -80,7 +79,6 @@ pub const InputEngine = struct {
         };
     }
 
-    /// Sample physical modifier key state (single lock-free read)
     pub fn sampleModifiers() ModifierMask {
         var mask = ModifierMask{};
         if ((@as(u16, @bitCast(t.GetAsyncKeyState(t.VK_MENU_I32))) & 0x8000) != 0) mask.alt = true;
@@ -94,7 +92,6 @@ pub const InputEngine = struct {
         return mask;
     }
 
-    /// Send dummy Ctrl keypress with ZWIN tag to prevent Windows menu activation on Alt/Win release
     pub fn neutralizeSystemMenu() void {
         const KEYEVENTF_KEYUP: u16 = 0x0002;
         const INPUT_KEYBOARD: u32 = 1;
@@ -145,7 +142,6 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
     const is_down = (wParam == t.WM_KEYDOWN or wParam == t.WM_SYSKEYDOWN);
     const is_up = (wParam == t.WM_KEYUP or wParam == t.WM_SYSKEYUP);
 
-    // On modifier release, if we previously consumed the hotkey, neutralize the system menu
     if (is_up) {
         if (kbd.vkCode == t.VK_MENU or kbd.vkCode == t.VK_LMENU or kbd.vkCode == t.VK_RMENU) {
             if (self.consumed_alt) {
@@ -153,7 +149,7 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
                 InputEngine.neutralizeSystemMenu();
             }
         }
-        if (kbd.vkCode == 0x5B or kbd.vkCode == 0x5C) { // Win key
+        if (kbd.vkCode == 0x5B or kbd.vkCode == 0x5C) {
             if (self.consumed_win) {
                 self.consumed_win = false;
                 InputEngine.neutralizeSystemMenu();
@@ -161,7 +157,6 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
         }
     }
 
-    // ESC cancels active gesture
     if (is_down and kbd.vkCode == t.VK_ESCAPE and (self.gesture.isBusy() or self.pending_mouse_action != null)) {
         self.pending_mouse_action = null;
         self.enqueueIntent(.abort_gesture);
@@ -169,7 +164,6 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
     }
 
     const current_mods = InputEngine.sampleModifiers();
-    // Core pruning: if current pressed modifiers share no bits with any configured rule, let it through immediately
     if (current_mods.isEmpty() or !self.config.hasMatchingModifierSubset(current_mods)) {
         return t.CallNextHookEx(null, nCode, wParam, lParam);
     }
@@ -181,7 +175,7 @@ fn keyboardCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.wi
 
             if (act.toUserIntent()) |intent| {
                 self.enqueueIntent(intent);
-                return 1; // consume
+                return 1;
             }
         }
     }
@@ -202,7 +196,7 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
         const current_mods = InputEngine.sampleModifiers();
 
         if (!current_mods.isEmpty() and self.config.hasMatchingModifierSubset(current_mods)) {
-            const m_trig: ?binding.MouseTrigger = switch (wParam) {
+            const m_trig: ?MouseTrigger = switch (wParam) {
                 t.WM_LBUTTONDOWN => .left,
                 t.WM_RBUTTONDOWN => .right,
                 t.WM_MBUTTONDOWN => .middle,
@@ -281,7 +275,6 @@ fn mouseCallback(nCode: i32, wParam: t.WPARAM, lParam: t.LPARAM) callconv(.winap
         }
         if (self.pending_mouse_action != null) {
             self.pending_mouse_action = null;
-            // For non-drag clicks that didn't reach threshold, forward the original click
             forwardOriginalClick(if (wParam == t.WM_LBUTTONUP) .left else if (wParam == t.WM_RBUTTONUP) .right else .middle);
             return 1;
         }

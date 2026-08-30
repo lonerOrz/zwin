@@ -80,16 +80,39 @@ pub const SnapTargetList = struct {
     }
 };
 
-pub const Sector = enum {
-    top_left,
-    top,
-    top_right,
-    left,
-    center,
-    right,
-    bottom_left,
-    bottom,
-    bottom_right,
+pub const Sector = enum(u4) {
+    top_left = 0,
+    top = 1,
+    top_right = 2,
+    left = 3,
+    center = 4,
+    right = 5,
+    bottom_left = 6,
+    bottom = 7,
+    bottom_right = 8,
+
+    pub fn toWmsz(self: Sector) usize {
+        return switch (self) {
+            .top_left => 4,
+            .top => 3,
+            .top_right => 5,
+            .left => 1,
+            .center, .bottom_right => 8,
+            .right => 2,
+            .bottom_left => 7,
+            .bottom => 6,
+        };
+    }
+
+    pub fn cursorResourceId(self: Sector) usize {
+        return switch (self) {
+            .top_left, .bottom_right => 32642, // IDC_SIZENWSE
+            .top_right, .bottom_left => 32643, // IDC_SIZENESW
+            .left, .right => 32644, // IDC_SIZEWE
+            .top, .bottom => 32645, // IDC_SIZENS
+            .center => 32646, // IDC_SIZEALL
+        };
+    }
 };
 
 // Map click point to 3x3 sectors; fallback to center on invalid dimensions

@@ -1,17 +1,16 @@
 const std = @import("std");
 const Paths = @import("../platform/paths.zig").Paths;
 const Config = @import("../domain/config.zig").Config;
-const Color = @import("../domain/color.zig").Color;
+const types = @import("../domain/types.zig");
+const Color = types.Color;
+const Binding = types.Binding;
+const ModifierMask = types.ModifierMask;
+const Trigger = types.Trigger;
+const Action = types.Action;
 const Language = @import("i18n.zig").Language;
-const binding = @import("../domain/binding.zig");
-const Binding = binding.Binding;
-const ModifierMask = binding.ModifierMask;
-const Trigger = binding.Trigger;
-const Action = binding.Action;
 const cst = @import("cst.zig");
 const logger = @import("logger.zig");
 
-// Thin writer wrapper so cst.emit can target an ArrayListUnmanaged buffer
 const ArrayListWriter = struct {
     list: *std.ArrayListUnmanaged(u8),
     alloc: std.mem.Allocator,
@@ -29,7 +28,6 @@ const ArrayListWriter = struct {
 };
 
 pub const KeyParser = struct {
-    /// Parse a single combo string like "alt+ctrl+h" into ModifierMask + Trigger
     pub fn parseKeyCombo(combo_str: []const u8) ?struct { mods: ModifierMask, trigger: Trigger } {
         var mods = ModifierMask{};
         var final_trigger: ?Trigger = null;
@@ -68,9 +66,7 @@ pub const KeyParser = struct {
             }
         }
 
-        if (final_trigger) |t| {
-            return .{ .mods = mods, .trigger = t };
-        }
+        if (final_trigger) |t| return .{ .mods = mods, .trigger = t };
         return null;
     }
 };
@@ -138,7 +134,6 @@ pub const ConfigStore = struct {
         return parseToml(allocator, bytes);
     }
 
-    /// Atomically mutate a root-level boolean in the TOML CST, preserving all comments and layout
     pub fn updateBoolOption(allocator: std.mem.Allocator, key: []const u8, value: bool) void {
         const cfg_dir = Paths.getConfigDir(allocator) catch return;
         defer allocator.free(cfg_dir);
@@ -159,11 +154,11 @@ pub const ConfigStore = struct {
         doc.emit(w) catch return;
 
         Paths.writeFile(cfg_path, out.items) catch |err| {
-            logger.err("Config", "failed to atomically save option {s}: {s}", .{ key, @errorName(err) });
+            logger.err("Config", "failed to atomically update {s}: {s}", .{ key, @errorName(err) });
         };
     }
 
-    fn parseToml(allocator: std.mem.Allocator, text: []const u8) Config {
+    pub fn parseToml(allocator: std.mem.Allocator, text: []const u8) Config {
         var cfg = Config{};
         var doc = cst.CstDocument.parse(allocator, text) catch return cfg;
         defer doc.deinit();
@@ -173,16 +168,9 @@ pub const ConfigStore = struct {
 
         for (doc.nodes.items) |node| {
             switch (node) {
-                .table_header => |th| {
-                    in_bind_table = std.ascii.eqlIgnoreCase(th.name, "bind");
-                },
-                .table_array_header => {
-                    // Legacy [[bind]] support — silently skip, user should migrate
-                    in_bind_table = false;
-                },
+                .table_header => |th| in_bind_table = std.ascii.eqlIgnoreCase(th.name, "bind"),
                 .key_value => |kv| {
                     if (in_bind_table) {
-                        // New format: "alt+h" = "focus_left"
                         if (kv.value == .string) {
                             if (Action.fromString(kv.value.string)) |act| {
                                 if (KeyParser.parseKeyCombo(kv.key)) |parsed| {
@@ -257,7 +245,7 @@ test "KeyParser parses modifier + key tokens" {
 
     const result3 = KeyParser.parseKeyCombo("alt+mouse_left") orelse unreachable;
     try std.testing.expect(result3.mods.alt);
-    try std.testing.expectEqual(binding.MouseTrigger.left, switch (result3.trigger) {
+    try std.testing.expectEqual(types.MouseTrigger.left, switch (result3.trigger) {
         .mouse => |m| m,
         .key => unreachable,
     });

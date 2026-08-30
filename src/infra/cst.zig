@@ -35,12 +35,8 @@ pub const Value = union(enum) {
 };
 
 pub const CstNode = union(enum) {
-    raw: []const u8, // preserves comments, blank lines, indentation
+    raw: []const u8,
     table_header: struct {
-        name: []const u8,
-        raw_line: []const u8,
-    },
-    table_array_header: struct {
         name: []const u8,
         raw_line: []const u8,
     },
@@ -55,10 +51,6 @@ pub const CstNode = union(enum) {
         switch (self.*) {
             .raw => |r| allocator.free(r),
             .table_header => |*th| {
-                allocator.free(th.name);
-                allocator.free(th.raw_line);
-            },
-            .table_array_header => |*th| {
                 allocator.free(th.name);
                 allocator.free(th.raw_line);
             },
@@ -99,20 +91,7 @@ pub const CstDocument = struct {
                 continue;
             }
 
-            // [[table]] array-of-tables
-            if (std.mem.startsWith(u8, trimmed, "[[") and std.mem.endsWith(u8, trimmed, "]]")) {
-                const name = std.mem.trim(u8, trimmed[2 .. trimmed.len - 2], " \t");
-                try doc.nodes.append(allocator, .{
-                    .table_array_header = .{
-                        .name = try allocator.dupe(u8, name),
-                        .raw_line = try allocator.dupe(u8, line),
-                    },
-                });
-                continue;
-            }
-
-            // [table] single table
-            if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+            if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']' and trimmed[1] != '[') {
                 const name = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t");
                 try doc.nodes.append(allocator, .{
                     .table_header = .{
@@ -135,12 +114,11 @@ pub const CstDocument = struct {
         return doc;
     }
 
-    /// In-place mutation of a root-level key: replaces existing value or inserts before first table
     pub fn setRootKeyValue(self: *CstDocument, key: []const u8, value: Value) !void {
         var in_root = true;
         for (self.nodes.items) |*node| {
             switch (node.*) {
-                .table_header, .table_array_header => in_root = false,
+                .table_header => in_root = false,
                 .key_value => |*kv| {
                     if (in_root and std.ascii.eqlIgnoreCase(kv.key, key)) {
                         kv.value.deinit(self.allocator);
@@ -152,10 +130,9 @@ pub const CstDocument = struct {
             }
         }
 
-        // Not found — insert before the first table
         var insert_idx: usize = self.nodes.items.len;
         for (self.nodes.items, 0..) |node, i| {
-            if (node == .table_header or node == .table_array_header) {
+            if (node == .table_header) {
                 insert_idx = i;
                 break;
             }
@@ -177,10 +154,8 @@ pub const CstDocument = struct {
             switch (node) {
                 .raw => |r| try writer.writeAll(r),
                 .table_header => |th| try writer.writeAll(th.raw_line),
-                .table_array_header => |th| try writer.writeAll(th.raw_line),
                 .key_value => |kv| {
                     try writer.writeAll(kv.indent);
-                    // Quote keys containing '+' so they parse correctly as TOML strings
                     if (std.mem.indexOfScalar(u8, kv.key, '+') != null) {
                         try writer.print("\"{s}\"", .{kv.key});
                     } else {
@@ -215,7 +190,6 @@ fn parseKeyValue(allocator: std.mem.Allocator, line: []const u8) !?CstNode {
     const indent_len = std.mem.indexOfNone(u8, raw_key, " \t") orelse 0;
     const indent = raw_key[0..indent_len];
 
-    // Strip trailing '#' comment (respecting double-quoted strings)
     var trailing_comment: []const u8 = "";
     var in_quotes = false;
     for (raw_val_and_trail, 0..) |c, idx| {
@@ -248,9 +222,7 @@ fn parseValue(allocator: std.mem.Allocator, text: []const u8) !Value {
         return .{ .string = try allocator.dupe(u8, text[1 .. text.len - 1]) };
     }
 
-    if (std.fmt.parseInt(i64, text, 10)) |num| {
-        return .{ .integer = num };
-    } else |_| {}
+    if (std.fmt.parseInt(i64, text, 10)) |num| return .{ .integer = num } else |_| {}
 
     if (text.len >= 2 and text[0] == '[' and text[text.len - 1] == ']') {
         var list = std.ArrayListUnmanaged(Value).empty;

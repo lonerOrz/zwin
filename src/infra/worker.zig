@@ -1,6 +1,7 @@
 const std = @import("std");
 const t = @import("../platform/win32.zig");
-const WindowTarget = @import("../domain/window_target.zig").WindowTarget;
+const types = @import("../domain/types.zig");
+const WindowTarget = types.WindowTarget;
 const logger = @import("logger.zig");
 
 pub const StreamingOp = union(enum) {

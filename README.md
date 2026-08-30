@@ -88,10 +88,10 @@ Requires [Zig](https://ziglang.org/download/) 0.16.
 
 ```sh
 # Build release binary (output at zig-out/bin/zwin.exe)
-zig build -Doptimize=ReleaseFast -Dstrip=true
+ zig build -Doptimize=ReleaseFast -Dstrip=true -Dtarget=x86_64-windows-gnu --summary all
 
 # Run tests
-zig build test -Dtarget=x86_64-windows-gnu
+zig build test --summary all
 ```
 
 ## License
