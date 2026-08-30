@@ -41,6 +41,8 @@ pub const GestureStateMachine = struct {
     osd: *OsdManager,
     last_osd_w: i32 = 0,
     last_osd_h: i32 = 0,
+    last_sent_w: i32 = 0,
+    last_sent_h: i32 = 0,
 
     pub fn init(worker: *WindowWorker, config: *const Config, osd: *OsdManager) GestureStateMachine {
         return .{ .worker = worker, .config = config, .osd = osd };
@@ -61,13 +63,15 @@ pub const GestureStateMachine = struct {
             .dpi = t.GetDpiForWindow(target.hwnd),
         } };
         setCursorById(32646); // IDC_SIZEALL
-        announceMoveSize(self.state.dragging.target.hwnd);
     }
 
     pub fn startResize(self: *GestureStateMachine, target: WindowTarget, cursor: geom.Point, bounds: geom.Rect, sector: geom.Sector, pad: geom.Padding) void {
         const win = Window.init(target.hwnd);
         var snap_targets = geom.SnapTargetList{};
         if (self.config.window_snap) Window.collectSnapTargets(target.hwnd, self.config, &snap_targets);
+
+        self.last_sent_w = bounds.width();
+        self.last_sent_h = bounds.height();
 
         self.state = .{ .resizing = .{
             .target = target,
@@ -79,7 +83,6 @@ pub const GestureStateMachine = struct {
             .snap_targets = snap_targets,
         } };
         setCursorById(sector.cursorResourceId());
-        announceMoveSize(self.state.resizing.target.hwnd);
     }
 
     pub fn updateMouseMove(self: *GestureStateMachine, current_pt: geom.Point) void {
@@ -132,19 +135,26 @@ pub const GestureStateMachine = struct {
                 const width = rc.width();
                 const height = rc.height();
 
+                // OSD 显示更新
                 if ((@abs(width - self.last_osd_w) >= 2) or (@abs(height - self.last_osd_h) >= 2)) {
                     self.last_osd_w = width;
                     self.last_osd_h = height;
                     self.osd.showResize(current_pt, width, height);
                 }
 
-                self.worker.postStreaming(r.target, .{ .resize = .{
-                    .x = rc.left - pad.l,
-                    .y = rc.top - pad.t,
-                    .w = width + pad.l + pad.r,
-                    .h = height + pad.t + pad.b,
-                    .wmsz = r.sector.toWmsz(),
-                } });
+                // 物理尺寸去重：尺寸未变化则不下发给目标窗口，减轻目标应用排版引擎压力
+                if (width != self.last_sent_w or height != self.last_sent_h) {
+                    self.last_sent_w = width;
+                    self.last_sent_h = height;
+
+                    self.worker.postStreaming(r.target, .{ .resize = .{
+                        .x = rc.left - pad.l,
+                        .y = rc.top - pad.t,
+                        .w = width + pad.l + pad.r,
+                        .h = height + pad.t + pad.b,
+                        .wmsz = r.sector.toWmsz(),
+                    } });
+                }
             },
         }
     }
@@ -191,11 +201,6 @@ pub const GestureStateMachine = struct {
         return self.state != .idle;
     }
 };
-
-fn announceMoveSize(hwnd: t.HWND) void {
-    _ = t.PostMessageW(hwnd, t.WM_ENTERSIZEMOVE, 0, 0);
-    t.NotifyWinEvent(t.EVENT_SYSTEM_MOVESIZESTART, hwnd, t.OBJID_WINDOW, 0);
-}
 
 fn endMoveSize(hwnd: t.HWND) void {
     _ = t.PostMessageW(hwnd, t.WM_EXITSIZEMOVE, 0, 0);

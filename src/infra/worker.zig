@@ -127,6 +127,7 @@ pub const WindowWorker = struct {
 
                 if (task.target.isValid(current_session)) {
                     executeStreaming(task.target.hwnd, task.op);
+                    _ = t.DwmFlush();
                 }
                 continue;
             }
@@ -164,7 +165,7 @@ pub const WindowWorker = struct {
                     m.y,
                     0,
                     0,
-                    t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER | t.SWP_NOSENDCHANGING | t.SWP_DEFERERASE,
+                    t.SWP_NOSIZE | t.SWP_NOZORDER | t.SWP_NOACTIVATE,
                 );
             },
             .resize => |r| {
@@ -175,7 +176,7 @@ pub const WindowWorker = struct {
                     r.y,
                     r.w,
                     r.h,
-                    t.SWP_NOZORDER | t.SWP_NOACTIVATE | t.SWP_NOCOPYBITS | t.SWP_NOOWNERZORDER | t.SWP_NOSENDCHANGING | t.SWP_DEFERERASE,
+                    t.SWP_NOZORDER | t.SWP_NOACTIVATE,
                 );
             },
         }

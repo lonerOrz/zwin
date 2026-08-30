@@ -170,9 +170,9 @@ pub const OsdManager = struct {
             y,
             OSD_WIDTH,
             OSD_HEIGHT,
-            t.SWP_NOACTIVATE | t.SWP_SHOWWINDOW | t.SWP_FRAMECHANGED,
+            t.SWP_NOACTIVATE | t.SWP_SHOWWINDOW | t.SWP_NOSIZE | t.SWP_NOZORDER,
         );
-        _ = t.InvalidateRect(hwnd, null, 1);
+        _ = t.InvalidateRect(hwnd, null, 0);
         self.visible = true;
 
         _ = t.KillTimer(hwnd, TIMER_OSD_AUTOHIDE);

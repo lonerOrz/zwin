@@ -548,6 +548,7 @@ pub const IDC_SIZENS: usize = 32645;
 // Win32 API functions: dwmapi.dll
 pub extern "dwmapi" fn DwmGetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
 pub extern "dwmapi" fn DwmSetWindowAttribute(hwnd: HWND, dwAttribute: u32, pvAttribute: *const anyopaque, cbAttribute: u32) callconv(.winapi) c_int;
+pub extern "dwmapi" fn DwmFlush() callconv(.winapi) c_int;
 // Win32 API functions: user32.dll — DPI awareness
 pub extern "user32" fn SetProcessDpiAwarenessContext(value: isize) callconv(.winapi) BOOL;
 
